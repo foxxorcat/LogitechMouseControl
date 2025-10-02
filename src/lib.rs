@@ -176,6 +176,32 @@ pub extern "C" fn vhid_move_mouse(input: *const MouseInput) -> VHidResult {
     }
 }
 
+/// 便捷函数：按下指定的鼠标按键
+#[no_mangle]
+pub extern "C" fn vhid_mouse_down(button: i8) -> VHidResult {
+    let input = MouseInput {
+        button,
+        x: 0,
+        y: 0,
+        wheel: 0,
+        reserved: 0,
+    };
+    vhid_move_mouse(&input)
+}
+
+/// 便捷函数：释放所有鼠标按键
+#[no_mangle]
+pub extern "C" fn vhid_mouse_up() -> VHidResult {
+    let input = MouseInput {
+        button: 0, // 按钮为 0 表示释放
+        x: 0,
+        y: 0,
+        wheel: 0,
+        reserved: 0,
+    };
+    vhid_move_mouse(&input)
+}
+
 /// 发送键盘输入
 #[no_mangle]
 pub extern "C" fn vhid_send_keyboard(input: *const KeyboardInput) -> VHidResult {

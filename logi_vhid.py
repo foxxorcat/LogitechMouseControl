@@ -21,6 +21,12 @@ class MouseInput(Structure):
         ('unk1', c_int8),     # 保留字段
     ]
 
+class MouseButtons(IntEnum):
+    NONE = 0
+    LEFT = 1
+    RIGHT = 2
+    MIDDLE = 3
+    
 class KeyboardInput(Structure):
     _fields_ = [
         ('modifiers', c_uint8),           # 修饰键
@@ -59,38 +65,42 @@ class LogiVHid:
     def _setup_prototypes(self):
         """设置函数原型"""
         # 核心函数
-        self._dll.vhid_initialize.restype = c_int32
-        self._dll.vhid_cleanup.restype = c_int32
-        self._dll.vhid_create_devices.restype = c_int32
-        self._dll.vhid_destroy_devices.restype = c_int32
+        self._dll.vhid_initialize.restype = VHidResult
+        self._dll.vhid_cleanup.restype = VHidResult
+        self._dll.vhid_create_devices.restype = VHidResult
+        self._dll.vhid_destroy_devices.restype = VHidResult
         
         # 输入函数
         self._dll.vhid_move_mouse.argtypes = [POINTER(MouseInput)]
-        self._dll.vhid_move_mouse.restype = c_int32
+        self._dll.vhid_move_mouse.restype = VHidResult
         
         self._dll.vhid_send_keyboard.argtypes = [POINTER(KeyboardInput)]
-        self._dll.vhid_send_keyboard.restype = c_int32
+        self._dll.vhid_send_keyboard.restype = VHidResult
         
         # 便捷函数
         self._dll.vhid_mouse_move.argtypes = [c_int8, c_int8]
-        self._dll.vhid_mouse_move.restype = c_int32
+        self._dll.vhid_mouse_move.restype = VHidResult
         
         self._dll.vhid_mouse_click.argtypes = [c_int8]
-        self._dll.vhid_mouse_click.restype = c_int32
+        self._dll.vhid_mouse_click.restype = VHidResult
         
         self._dll.vhid_mouse_wheel.argtypes = [c_int8]
-        self._dll.vhid_mouse_wheel.restype = c_int32
+        self._dll.vhid_mouse_wheel.restype = VHidResult
+        
+        self._dll.vhid_mouse_down.argtypes = [ctypes.c_int8]
+        self._dll.vhid_mouse_down.restype = VHidResult
+        self._dll.vhid_mouse_up.restype = VHidResult
         
         self._dll.vhid_key_press.argtypes = [c_uint8]
-        self._dll.vhid_key_press.restype = c_int32
+        self._dll.vhid_key_press.restype = VHidResult
         
-        self._dll.vhid_key_release.restype = c_int32
+        self._dll.vhid_key_release.restype = VHidResult
         
         # 工具函数
         self._dll.vhid_get_last_error.argtypes = [wintypes.LPSTR, wintypes.DWORD]
         self._dll.vhid_get_last_error.restype = wintypes.DWORD
         
-        self._dll.vhid_devices_created.restype = c_int32
+        self._dll.vhid_devices_created.restype = VHidResult
     
     def initialize(self):
         """初始化虚拟设备系统"""
@@ -148,6 +158,12 @@ class LogiVHid:
         if not self._initialized:
             return VHidResult.NotInitialized
         return VHidResult(self._dll.vhid_mouse_wheel(delta))
+    
+    def mouse_down(self, button: MouseButtons = MouseButtons.LEFT) -> VHidResult:
+        return self._dll.vhid_mouse_down(button)
+        
+    def mouse_up(self) -> VHidResult:
+        return self._dll.vhid_mouse_up()
     
     def key_press(self, key_code):
         """按下单个键盘按键

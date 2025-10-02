@@ -18,6 +18,24 @@ use windows::{
 
 use crate::{constants::*, utils::find_inf_file};
 
+pub fn install_driver_path(inf_bus_path: &str, inf_hid_path: &str) -> Result<()> {
+    println!("[*] --- 开始驱动安装流程 ---");
+
+    // 函数体现在直接使用传入的路径
+    if check_device_exists()? {
+        println!("[*] 设备 '{}' 已存在，跳过创建。", HARDWARE_ID);
+    } else {
+        println!("[*] 开始创建并安装设备: {}", HARDWARE_ID);
+        install_bus_device(inf_bus_path)?;
+    }
+
+    println!("[*] 正在安装HID驱动 '{}'...", inf_hid_path);
+    install_hid_driver(inf_hid_path)?;
+
+    println!("\n[*] 驱动安装流程执行完毕！");
+    Ok(())
+}
+
 pub fn install_driver() -> Result<()> {
     println!("[*] --- 开始驱动安装流程 ---");
 
@@ -104,7 +122,7 @@ pub fn uninstall_driver() -> Result<()> {
     Ok(())
 }
 
-fn install_bus_device(inf_path: &str) -> Result<()> {
+pub(crate) fn install_bus_device(inf_path: &str) -> Result<()> {
     println!("[*] 步骤 1/6: 从INF文件获取设备类GUID...");
     let inf_path_hstring = HSTRING::from(inf_path);
     let inf_path_pcwstr = PCWSTR::from_raw(inf_path_hstring.as_ptr());
@@ -189,7 +207,7 @@ fn install_bus_device(inf_path: &str) -> Result<()> {
     Ok(())
 }
 
-fn install_hid_driver(inf_path: &str) -> Result<()> {
+pub(crate) fn install_hid_driver(inf_path: &str) -> Result<()> {
     let inf_path_hstring = HSTRING::from(inf_path);
 
     let result = unsafe {
@@ -217,7 +235,7 @@ fn install_hid_driver(inf_path: &str) -> Result<()> {
     Ok(())
 }
 
-fn check_device_exists() -> Result<bool> {
+pub(crate) fn check_device_exists() -> Result<bool> {
     let dev_info_set: HDEVINFO =
         unsafe { SetupDiGetClassDevsW(None, None, None, DIGCF_ALLCLASSES) }?;
     if dev_info_set.is_invalid() {
@@ -247,7 +265,7 @@ fn check_device_exists() -> Result<bool> {
     Ok(found)
 }
 
-fn get_device_hardware_id(
+pub(crate) fn get_device_hardware_id(
     dev_info_set: HDEVINFO,
     dev_info_data: &mut SP_DEVINFO_DATA,
 ) -> Option<String> {
