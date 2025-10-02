@@ -1,0 +1,37 @@
+[package]
+name = "logi_vhid_manager"
+version = "0.1.0"
+edition = "2021"
+
+[package.metadata.patch]
+crates = ["winapi"]
+
+[patch.crates-io]
+winapi = { path="./target/patch/winapi-0.3.9" }
+
+
+[lib]
+name = "logi_vhid"
+crate-type = ["cdylib", "rlib"]  # 同时生成动态库和Rust库
+
+[[bin]]
+name = "logi_vhid_manager"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+walkdir = "2.5.0"
+lazy_static = "1.5.0"
+
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "^0.3.9", features = [
+    "winerror", "winbase", "winuser", "winnt", "setupapi", 
+    "shellapi", "handleapi", "fileapi", "ioapiset", 
+    "errhandlingapi", "libloaderapi", "cfg", "securitybaseapi", 
+    "newdev"
+] }
+
+[build-dependencies]
+cargo-patch = "0.3"
