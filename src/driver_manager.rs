@@ -16,15 +16,13 @@ use winapi::{
     },
 };
 
-use crate::constants::*;
 use crate::utils::{get_last_error, string_to_wide, wide_to_string};
+use crate::{constants::*, utils::find_inf_file};
 
 pub fn install_driver() -> Result<()> {
     println!("[*] --- 开始驱动安装流程 ---");
 
-    let inf_bus_path = std::path::Path::new(INF_BUS_FILE)
-        .canonicalize()
-        .map_err(|_| anyhow!("核心总线驱动 '{}' 未找到!", INF_BUS_FILE))?;
+    let inf_bus_path = find_inf_file(INF_BUS_FILE)?;
 
     if check_device_exists()? {
         println!("[*] 设备 '{}' 已存在，跳过创建。", HARDWARE_ID);
@@ -34,15 +32,17 @@ pub fn install_driver() -> Result<()> {
     }
 
     // 安装HID驱动
-    let inf_hid_path = std::path::Path::new(INF_HID_FILE);
-    if inf_hid_path.exists() {
-        println!("[*] 正在安装HID驱动 '{}'...", INF_HID_FILE);
-        install_hid_driver(&inf_hid_path.to_string_lossy())?;
-    } else {
-        println!(
-            "[警告] HID驱动 '{}' 未找到，虚拟设备可能无法工作。",
-            INF_HID_FILE
-        );
+    match find_inf_file(INF_HID_FILE) {
+        Ok(inf_hid_path) => {
+            println!("[*] 正在安装HID驱动 '{}'...", INF_HID_FILE);
+            install_hid_driver(&inf_hid_path.to_string_lossy())?;
+        }
+        Err(_) => {
+            println!(
+                "[警告] HID驱动 '{}' 未找到，虚拟设备可能无法工作。",
+                INF_HID_FILE
+            );
+        }
     }
 
     println!("\n[*] 驱动安装流程执行完毕！");

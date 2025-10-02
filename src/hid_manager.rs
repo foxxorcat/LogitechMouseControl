@@ -1,84 +1,58 @@
+use std::{thread::sleep, time::Duration};
+
 use anyhow::{anyhow, Result};
 use winapi::{
     shared::minwindef::DWORD,
     um::fileapi::{CreateFileW, OPEN_EXISTING},
     um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE},
     um::ioapiset::DeviceIoControl,
-    um::winnt::{GENERIC_READ, GENERIC_WRITE}, // 修正导入路径
+    um::winnt::{GENERIC_READ, GENERIC_WRITE},
 };
 
-use crate::constants::*;
-use crate::utils::{
-    get_last_error, load_device_ids, save_device_ids, string_to_wide, DeviceIds, KeyboardInput,
-    MouseInput,
+use crate::device_discovery::DeviceDiscovery;
+use crate::utils::{get_last_error, string_to_wide}; // 移除了 load/save
+use crate::{
+    constants::*,
+    types::{DeviceIds, KeyboardInput, MouseInput},
 };
 
-pub fn create_hid_devices() -> Result<()> {
-    println!("[*] --- 开始创建虚拟HID设备 ---");
-
+/// 创建虚拟HID设备，并返回发现的设备ID
+pub fn create_hid_devices() -> Result<DeviceIds> {
+    println!("[*] --- 开始创建并发现虚拟HID设备 ---");
     let bus_handle = open_bus_device()?;
-    let mut created_ids = DeviceIds {
-        keyboard_id: None,
-        mouse_id: None,
-    };
 
-    // 创建虚拟键盘
-    match create_single_hid_device(bus_handle, "keyboard") {
-        Ok(id) => {
-            created_ids.keyboard_id = Some(id);
-            println!("  - 成功创建键盘设备，ID: {}", id);
-        }
-        Err(e) => println!("[!] 创建虚拟键盘时出错: {}", e),
+    if let Err(e) = create_single_hid_device(bus_handle, "keyboard") {
+        println!("[!] 发送创建键盘请求时出错: {}", e);
     }
-
-    // 创建虚拟鼠标
-    match create_single_hid_device(bus_handle, "mouse") {
-        Ok(id) => {
-            created_ids.mouse_id = Some(id);
-            println!("  - 成功创建鼠标设备，ID: {}", id);
-        }
-        Err(e) => println!("[!] 创建虚拟鼠标时出错: {}", e),
+    if let Err(e) = create_single_hid_device(bus_handle, "mouse") {
+        println!("[!] 发送创建鼠标请求时出错: {}", e);
     }
-
     unsafe { CloseHandle(bus_handle) };
 
-    if created_ids.keyboard_id.is_none() && created_ids.mouse_id.is_none() {
-        println!("[!] 未能成功创建任何虚拟HID设备。");
+    sleep(Duration::from_millis(200));
+
+    let discovered_ids = DeviceDiscovery::discover_devices()?;
+    if discovered_ids.is_empty() {
+        println!("[!] 警告: 未能发现任何虚拟HID设备。");
     } else {
-        save_device_ids(&created_ids)?;
-        println!(
-            "\n[成功] 虚拟HID设备创建完毕，ID已保存至 '{}'。",
-            TEMP_ID_FILE
-        );
+        println!("\n[成功] 虚拟HID设备已发现并配置。");
     }
 
-    Ok(())
+    Ok(discovered_ids)
 }
 
-pub fn destroy_hid_devices() -> Result<()> {
+/// 根据传入的设备ID销毁虚拟HID设备
+pub fn destroy_hid_devices(device_ids: &DeviceIds) -> Result<()> {
     println!("[*] --- 开始销毁虚拟HID设备 ---");
-
-    let device_ids = load_device_ids()?;
     let bus_handle = open_bus_device()?;
 
     if let Some(keyboard_id) = device_ids.keyboard_id {
         destroy_single_hid_device(bus_handle, keyboard_id, "keyboard")?;
-    } else {
-        println!("[*] 未找到要销毁的键盘设备ID，跳过。");
     }
-
     if let Some(mouse_id) = device_ids.mouse_id {
         destroy_single_hid_device(bus_handle, mouse_id, "mouse")?;
-    } else {
-        println!("[*] 未找到要销毁的鼠标设备ID，跳过。");
     }
-
     unsafe { CloseHandle(bus_handle) };
-
-    if std::path::Path::new(TEMP_ID_FILE).exists() {
-        std::fs::remove_file(TEMP_ID_FILE)?;
-        println!("[*] 已删除临时ID文件 '{}'。", TEMP_ID_FILE);
-    }
 
     println!("\n[成功] 虚拟HID设备清理完毕。");
     Ok(())
@@ -110,7 +84,7 @@ pub(crate) fn open_bus_device() -> Result<winapi::um::winnt::HANDLE> {
 pub(crate) fn create_single_hid_device(
     bus_handle: winapi::um::winnt::HANDLE,
     device_type: &str,
-) -> Result<u32> {
+) -> Result<()> {
     println!("[+] 正在构建并发送'创建{}'的IOCTL数据包...", device_type);
 
     let (buffer_size, pid_vid_part, magic_int1, dev_type_flag, hid_desc) = match device_type {
@@ -125,7 +99,13 @@ pub(crate) fn create_single_hid_device(
                 0x75, 0x03, 0x91, 0x01, 0x95, 0x06, 0x75, 0x08, 0x15, 0x00, 0x25, 0x65, 0x05, 0x07,
                 0x19, 0x00, 0x29, 0x65, 0x81, 0x00, 0xC0,
             ];
-            (246, pid_vid_part, 0x3DCDFB93, 0u32, hid_desc)
+            (
+                246,
+                pid_vid_part,
+                0x3DCDFB93,
+                DEVICE_TYPE_KEYBOARD,
+                hid_desc,
+            )
         }
         "mouse" => {
             let pid_vid_part = "LGHUBDevice\\VID_046D&PID_C231"
@@ -137,7 +117,7 @@ pub(crate) fn create_single_hid_device(
                 0x75, 0x03, 0x81, 0x01, 0x05, 0x01, 0x09, 0x30, 0x09, 0x31, 0x09, 0x38, 0x15, 0x81,
                 0x25, 0x7F, 0x75, 0x08, 0x95, 0x03, 0x81, 0x06, 0xC0, 0xC0,
             ];
-            (254, pid_vid_part, 0x3DCEFB93, 1u32, hid_desc)
+            (254, pid_vid_part, 0x3DCEFB93, DEVICE_TYPE_MOUSE, hid_desc)
         }
         _ => return Err(anyhow!("无效的设备类型")),
     };
@@ -146,9 +126,7 @@ pub(crate) fn create_single_hid_device(
     let mut output_buffer = vec![0u8; buffer_size];
     let mut bytes_returned = 0;
 
-    // 构建IOCTL输入缓冲区
     unsafe {
-        // 填充各个字段
         std::ptr::copy_nonoverlapping(
             &183u32 as *const _ as *const u8,
             input_buffer.as_mut_ptr(),
@@ -164,17 +142,13 @@ pub(crate) fn create_single_hid_device(
             input_buffer.as_mut_ptr().add(12),
             4,
         );
-
-        // 复制PID_VID部分
         let pid_vid_bytes =
             std::slice::from_raw_parts(pid_vid_part.as_ptr() as *const u8, pid_vid_part.len() * 2);
         std::ptr::copy_nonoverlapping(
             pid_vid_bytes.as_ptr(),
             input_buffer.as_mut_ptr().add(16),
-            pid_vid_bytes.len().min(128), // 确保不越界
+            pid_vid_bytes.len().min(128),
         );
-
-        // 复制magic整数和类型标志
         std::ptr::copy_nonoverlapping(
             &magic_int1 as *const _ as *const u8,
             input_buffer.as_mut_ptr().add(144),
@@ -185,8 +159,6 @@ pub(crate) fn create_single_hid_device(
             input_buffer.as_mut_ptr().add(148),
             4,
         );
-
-        // 复制HID描述符长度和内容
         let hid_desc_len = hid_desc.len() as u32;
         std::ptr::copy_nonoverlapping(
             &hid_desc_len as *const _ as *const u8,
@@ -216,14 +188,10 @@ pub(crate) fn create_single_hid_device(
     if success == 0 {
         return Err(anyhow!("发送IOCTL请求失败: {}", get_last_error()));
     }
-
-    // 从输出缓冲区解析设备ID
-    let device_id = unsafe { std::ptr::read(output_buffer.as_ptr().add(4) as *const u32) };
-
-    Ok(device_id)
+    Ok(())
 }
 
-pub(crate)  fn destroy_single_hid_device(
+pub(crate) fn destroy_single_hid_device(
     bus_handle: winapi::um::winnt::HANDLE,
     device_id: u32,
     device_type: &str,
@@ -242,7 +210,6 @@ pub(crate)  fn destroy_single_hid_device(
     let mut bytes_returned = 0;
 
     unsafe {
-        // 构建销毁请求缓冲区
         std::ptr::copy_nonoverlapping(
             &20u32 as *const _ as *const u8,
             input_buffer.as_mut_ptr(),
@@ -280,18 +247,20 @@ pub(crate)  fn destroy_single_hid_device(
             get_last_error()
         ));
     }
-
     println!("  - 成功发送销毁请求。");
     Ok(())
 }
 
 /// 发送鼠标输入到虚拟设备
-pub fn send_mouse_input(device_handle: winapi::um::winnt::HANDLE, input: &MouseInput) -> Result<()> {
+pub fn send_mouse_input(
+    device_handle: winapi::um::winnt::HANDLE,
+    input: &MouseInput,
+) -> Result<()> {
     let mut bytes_returned = 0;
     let success = unsafe {
         DeviceIoControl(
             device_handle,
-            IOCTL_MOVE_MOUSE,
+            IOCTL_WRITE_SECONDARY_DEVICE,
             input as *const _ as *mut _,
             std::mem::size_of::<MouseInput>() as DWORD,
             core::ptr::null_mut(),
@@ -309,12 +278,15 @@ pub fn send_mouse_input(device_handle: winapi::um::winnt::HANDLE, input: &MouseI
 }
 
 /// 发送键盘输入到虚拟设备
-pub fn send_keyboard_input(device_handle: winapi::um::winnt::HANDLE, input: &KeyboardInput) -> Result<()> {
+pub fn send_keyboard_input(
+    device_handle: winapi::um::winnt::HANDLE,
+    input: &KeyboardInput,
+) -> Result<()> {
     let mut bytes_returned = 0;
     let success = unsafe {
         DeviceIoControl(
             device_handle,
-            IOCTL_SEND_KEYBOARD,
+            IOCTL_WRITE_SECONDARY_DEVICE,
             input as *const _ as *mut _,
             std::mem::size_of::<KeyboardInput>() as DWORD,
             core::ptr::null_mut(),
@@ -333,15 +305,17 @@ pub fn send_keyboard_input(device_handle: winapi::um::winnt::HANDLE, input: &Key
 
 /// 打开可用的虚拟设备句柄
 pub fn open_vulnerable_device() -> Result<winapi::um::winnt::HANDLE> {
-    // 尝试多个可能的设备路径
-    let device_paths = [
-        "\\\\.\\ROOT#SYSTEM#0001#{1abc05c0-c378-41b9-9cef-df1aba82b015}",
-        "\\\\.\\ROOT#SYSTEM#0002#{1abc05c0-c378-41b9-9cef-df1aba82b015}",
-        "\\\\.\\ROOT#SYSTEM#0003#{1abc05c0-c378-41b9-9cef-df1aba82b015}",
-    ];
+    // 设备路径模板，使用占位符替换序号
+    // const DEVICE_PATH_TEMPLATE: &str =;
+    // 尝试的设备序号范围
+    for number in 1..=3 {
+        // 动态生成设备路径
+        let path = format!(
+            "\\\\.\\ROOT#SYSTEM#000{}#{{1abc05c0-c378-41b9-9cef-df1aba82b015}}",
+            number
+        );
+        let path_wide = string_to_wide(&path);
 
-    for path in &device_paths {
-        let path_wide = string_to_wide(path);
         let handle = unsafe {
             CreateFileW(
                 path_wide.as_ptr(),

@@ -5,17 +5,19 @@ use std::ffi::CString;
 use std::ptr;
 
 mod constants;
+mod device_discovery;
 mod driver_manager;
 mod hid_manager;
+mod types;
 mod utils;
 
 use lazy_static::lazy_static;
 use std::sync::Mutex;
 
 use anyhow::Result;
-use utils::{load_device_ids, save_device_ids, DeviceIds};
 
-use crate::utils::{KeyboardInput, MouseInput};
+use crate::device_discovery::DeviceDiscovery;
+use crate::types::{DeviceIds, KeyboardInput, MouseInput};
 
 lazy_static! {
     /// 全局设备句柄管理
@@ -43,31 +45,25 @@ impl DeviceHandleManager {
         })
     }
 
+    /// 确保设备已创建或被发现，并将ID存储在实例中
     fn ensure_devices_created(&mut self) -> Result<()> {
-        if self.keyboard_id.is_none() || self.mouse_id.is_none() {
-            // 加载已存在的设备ID或创建新设备
-            if let Ok(device_ids) = load_device_ids() {
-                self.keyboard_id = device_ids.keyboard_id;
-                self.mouse_id = device_ids.mouse_id;
-            } else {
-                // 创建新设备
-                self.keyboard_id = Some(hid_manager::create_single_hid_device(
-                    self.bus_handle,
-                    "keyboard",
-                )?);
-                self.mouse_id = Some(hid_manager::create_single_hid_device(
-                    self.bus_handle,
-                    "mouse",
-                )?);
-
-                // 保存设备ID
-                let device_ids = DeviceIds {
-                    keyboard_id: self.keyboard_id,
-                    mouse_id: self.mouse_id,
-                };
-                save_device_ids(&device_ids)?;
-            }
+        if self.keyboard_id.is_some() || self.mouse_id.is_some() {
+            return Ok(());
         }
+
+        // 首先，尝试发现已存在的设备
+        let mut device_ids = DeviceDiscovery::discover_devices()?;
+        if device_ids.is_empty() {
+            // 如果没发现，则创建它们
+            println!("[*] 未发现现有设备，开始创建流程...");
+            device_ids = hid_manager::create_hid_devices()?;
+        } else {
+            println!("[*] 已发现现有虚拟设备。");
+        }
+
+        self.keyboard_id = device_ids.keyboard_id;
+        self.mouse_id = device_ids.mouse_id;
+
         Ok(())
     }
 }
@@ -95,11 +91,7 @@ impl Drop for DeviceHandleManager {
                 winapi::um::handleapi::CloseHandle(self.bus_handle);
             }
         }
-
-        // 删除临时文件
-        if std::path::Path::new(crate::constants::TEMP_ID_FILE).exists() {
-            let _ = std::fs::remove_file(crate::constants::TEMP_ID_FILE);
-        }
+        // 移除了删除临时文件的逻辑
     }
 }
 unsafe impl Send for DeviceHandleManager {}
@@ -126,15 +118,12 @@ impl From<Result<()>> for VHidResult {
 }
 
 /// 初始化虚拟设备系统
-/// 返回: 状态码
 #[no_mangle]
 pub extern "C" fn vhid_initialize() -> VHidResult {
     let mut manager = DEVICE_MANAGER.lock().unwrap();
-
     if manager.is_some() {
-        return VHidResult::Success; // 已经初始化
+        return VHidResult::Success;
     }
-
     match DeviceHandleManager::new() {
         Ok(device_manager) => {
             *manager = Some(device_manager);
@@ -145,7 +134,6 @@ pub extern "C" fn vhid_initialize() -> VHidResult {
 }
 
 /// 清理虚拟设备系统
-/// 返回: 状态码
 #[no_mangle]
 pub extern "C" fn vhid_cleanup() -> VHidResult {
     let mut manager = DEVICE_MANAGER.lock().unwrap();
@@ -153,12 +141,10 @@ pub extern "C" fn vhid_cleanup() -> VHidResult {
     VHidResult::Success
 }
 
-/// 创建虚拟HID设备
-/// 返回: 状态码
+/// 创建或发现虚拟HID设备
 #[no_mangle]
 pub extern "C" fn vhid_create_devices() -> VHidResult {
     let mut manager = DEVICE_MANAGER.lock().unwrap();
-
     if let Some(device_manager) = manager.as_mut() {
         match device_manager.ensure_devices_created() {
             Ok(()) => VHidResult::Success,
@@ -170,30 +156,26 @@ pub extern "C" fn vhid_create_devices() -> VHidResult {
 }
 
 /// 销毁虚拟HID设备
-/// 返回: 状态码
 #[no_mangle]
 pub extern "C" fn vhid_destroy_devices() -> VHidResult {
     let mut manager = DEVICE_MANAGER.lock().unwrap();
-
     if let Some(device_manager) = manager.as_mut() {
+        // 直接销毁，然后清空ID
+        let device_ids = DeviceIds {
+            keyboard_id: device_manager.keyboard_id,
+            mouse_id: device_manager.mouse_id,
+        };
+        if let Err(_) = hid_manager::destroy_hid_devices(&device_ids) {
+            return VHidResult::Error;
+        }
         device_manager.keyboard_id = None;
         device_manager.mouse_id = None;
-
-        // 删除临时文件
-        if std::path::Path::new(crate::constants::TEMP_ID_FILE).exists() {
-            let _ = std::fs::remove_file(crate::constants::TEMP_ID_FILE);
-        }
-
         VHidResult::Success
     } else {
         VHidResult::NotInitialized
     }
 }
 
-/// 移动虚拟鼠标
-/// # 参数:
-/// - input: 鼠标输入结构体指针
-/// 返回: 状态码
 #[no_mangle]
 pub extern "C" fn vhid_move_mouse(input: *const MouseInput) -> VHidResult {
     if input.is_null() {
@@ -214,10 +196,6 @@ pub extern "C" fn vhid_move_mouse(input: *const MouseInput) -> VHidResult {
     }
 }
 
-/// 发送键盘输入
-/// # 参数:
-/// - input: 键盘输入结构体指针
-/// 返回: 状态码
 #[no_mangle]
 pub extern "C" fn vhid_send_keyboard(input: *const KeyboardInput) -> VHidResult {
     if input.is_null() {
@@ -238,11 +216,6 @@ pub extern "C" fn vhid_send_keyboard(input: *const KeyboardInput) -> VHidResult 
     }
 }
 
-/// 获取最后错误信息
-/// # 参数:
-/// - buffer: 输出缓冲区
-/// - size: 缓冲区大小
-/// 返回: 实际写入的字符数
 #[no_mangle]
 pub extern "C" fn vhid_get_last_error(buffer: *mut i8, size: usize) -> usize {
     if buffer.is_null() || size == 0 {
@@ -259,11 +232,9 @@ pub extern "C" fn vhid_get_last_error(buffer: *mut i8, size: usize) -> usize {
         ptr::copy_nonoverlapping(bytes.as_ptr(), buffer as *mut u8, copy_size);
     }
 
-    copy_size - 1 // 返回字符串长度(不包括null终止符)
+    copy_size.saturating_sub(1)
 }
 
-/// 检查设备是否已创建
-/// 返回: 1-已创建, 0-未创建
 #[no_mangle]
 pub extern "C" fn vhid_devices_created() -> i32 {
     let manager = DEVICE_MANAGER.lock().unwrap();
@@ -279,11 +250,6 @@ pub extern "C" fn vhid_devices_created() -> i32 {
     }
 }
 
-/// 便捷函数：移动鼠标相对坐标
-/// # 参数:
-/// - x: X轴移动量 (-127 到 127)
-/// - y: Y轴移动量 (-127 到 127)
-/// 返回: 状态码
 #[no_mangle]
 pub extern "C" fn vhid_mouse_move(x: i8, y: i8) -> VHidResult {
     let input = MouseInput {
@@ -291,15 +257,11 @@ pub extern "C" fn vhid_mouse_move(x: i8, y: i8) -> VHidResult {
         x,
         y,
         wheel: 0,
-        unk1: 0,
+        reserved: 0,
     };
     vhid_move_mouse(&input)
 }
 
-/// 便捷函数：鼠标点击
-/// # 参数:
-/// - button: 按钮 (0-无, 1-左键, 2-右键, 3-中键)
-/// 返回: 状态码
 #[no_mangle]
 pub extern "C" fn vhid_mouse_click(button: i8) -> VHidResult {
     let input = MouseInput {
@@ -307,15 +269,11 @@ pub extern "C" fn vhid_mouse_click(button: i8) -> VHidResult {
         x: 0,
         y: 0,
         wheel: 0,
-        unk1: 0,
+        reserved: 0,
     };
     vhid_move_mouse(&input)
 }
 
-/// 便捷函数：鼠标滚轮
-/// # 参数:
-/// - wheel: 滚轮移动量
-/// 返回: 状态码
 #[no_mangle]
 pub extern "C" fn vhid_mouse_wheel(wheel: i8) -> VHidResult {
     let input = MouseInput {
@@ -323,15 +281,11 @@ pub extern "C" fn vhid_mouse_wheel(wheel: i8) -> VHidResult {
         x: 0,
         y: 0,
         wheel,
-        unk1: 0,
+        reserved: 0,
     };
     vhid_move_mouse(&input)
 }
 
-/// 便捷函数：按下单个键盘按键
-/// # 参数:
-/// - key: 按键HID码
-/// 返回: 状态码
 #[no_mangle]
 pub extern "C" fn vhid_key_press(key: u8) -> VHidResult {
     let mut keys = [0u8; 6];
@@ -345,8 +299,6 @@ pub extern "C" fn vhid_key_press(key: u8) -> VHidResult {
     vhid_send_keyboard(&input)
 }
 
-/// 便捷函数：释放所有按键
-/// 返回: 状态码
 #[no_mangle]
 pub extern "C" fn vhid_key_release() -> VHidResult {
     let input = KeyboardInput {

@@ -7,12 +7,12 @@ edition = "2021"
 crates = ["winapi"]
 
 [patch.crates-io]
-winapi = { path="./target/patch/winapi-0.3.9" }
+winapi = { path = "./target/patch/winapi-0.3.9" }
 
 
 [lib]
 name = "logi_vhid"
-crate-type = ["cdylib", "rlib"]  # 同时生成动态库和Rust库
+crate-type = ["cdylib", "rlib"] # 同时生成动态库和Rust库
 
 [[bin]]
 name = "logi_vhid_manager"
@@ -24,14 +24,39 @@ serde_json = "1.0"
 anyhow = "1.0"
 walkdir = "2.5.0"
 lazy_static = "1.5.0"
+regex = "1.11.3"
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "^0.3.9", features = [
-    "winerror", "winbase", "winuser", "winnt", "setupapi", 
-    "shellapi", "handleapi", "fileapi", "ioapiset", 
-    "errhandlingapi", "libloaderapi", "cfg", "securitybaseapi", 
-    "newdev"
+    "winerror",
+    "winbase",
+    "winuser",
+    "winnt",
+    "setupapi",
+    "shellapi",
+    "handleapi",
+    "fileapi",
+    "ioapiset",
+    "errhandlingapi",
+    "libloaderapi",
+    "cfg",
+    "securitybaseapi",
+    "newdev",
+    "hidsdi",
 ] }
+
+[dependencies.windows]
+version = "0.62.1"
+features = [
+    "Win32_Devices_HumanInterfaceDevice",
+    "Win32_Devices_DeviceAndDriverInstallation",
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_IO",
+    "Win32_System_Threading",
+    "Win32_System_SystemServices",
+    "Win32_Storage_FileSystem",
+]
 
 [build-dependencies]
 cargo-patch = "0.3"
