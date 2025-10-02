@@ -1,5 +1,3 @@
-use winapi::shared::minwindef::DWORD;
-
 // ================================
 // 文件和设备常量
 // ================================
@@ -20,21 +18,21 @@ pub const BUS_DEVICE_PATH: &str = "\\\\?\\root#system#0001#{dfbedcdb-2148-416d-9
 // ================================
 
 /// 创建设备的IOCTL控制码
-pub const IOCTL_BUS_CREATE_DEVICE: DWORD = 0x2A2000;
+pub const IOCTL_BUS_CREATE_DEVICE: u32 = 0x2A2000;
 /// 销毁设备的IOCTL控制码
-pub const IOCTL_BUS_DESTROY_DEVICE: DWORD = 0x2A2004;
+pub const IOCTL_BUS_DESTROY_DEVICE: u32 = 0x2A2004;
 
 /// 写入数据到主设备的IOCTL控制码
-pub const IOCTL_WRITE_PRIMARY_DEVICE: DWORD = 0x2A200C;
+pub const IOCTL_WRITE_PRIMARY_DEVICE: u32 = 0x2A200C;
 /// 写入数据到次设备的IOCTL控制码
-pub const IOCTL_WRITE_SECONDARY_DEVICE: DWORD = 0x2A2010;
+pub const IOCTL_WRITE_SECONDARY_DEVICE: u32 = 0x2A2010;
 /// 从第三设备读取数据的IOCTL控制码
-pub const IOCTL_READ_TERTIARY_DEVICE: DWORD = 0x2A203C;
+pub const IOCTL_READ_TERTIARY_DEVICE: u32 = 0x2A203C;
 
 /// 启动异步读取的IOCTL控制码
-pub const IOCTL_START_ASYNC_READ: DWORD = 0x2A2023;
+pub const IOCTL_START_ASYNC_READ: u32 = 0x2A2023;
 /// 启动异步写入的IOCTL控制码
-pub const IOCTL_START_ASYNC_WRITE: DWORD = 0x2A2024;
+pub const IOCTL_START_ASYNC_WRITE: u32 = 0x2A2024;
 
 // ================================
 // 设备特定常量
@@ -51,6 +49,3 @@ pub const PRODUCT_ID_VIRTUAL_MOUSE: u16 = 0xC231;
 pub const DEVICE_TYPE_KEYBOARD: u32 = 0;
 /// 鼠标设备类型标识
 pub const DEVICE_TYPE_MOUSE: u32 = 1;
-
-/// 创建设备请求的魔数
-pub const CREATE_DEVICE_MAGIC_NUMBER: u32 = 183;

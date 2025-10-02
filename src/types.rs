@@ -1,4 +1,3 @@
-use serde::{Deserialize, Serialize};
 use std::mem::size_of;
 
 /// 鼠标输入结构体
@@ -84,7 +83,7 @@ impl KeyboardInput {
 }
 
 /// 设备ID存储结构
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Clone)]
 pub struct DeviceIds {
     pub keyboard_id: Option<u32>,
     pub mouse_id: Option<u32>,

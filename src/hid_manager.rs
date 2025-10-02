@@ -1,20 +1,20 @@
-use std::{thread::sleep, time::Duration};
-
 use anyhow::{anyhow, Result};
-use winapi::{
-    shared::minwindef::DWORD,
-    um::fileapi::{CreateFileW, OPEN_EXISTING},
-    um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE},
-    um::ioapiset::DeviceIoControl,
-    um::winnt::{GENERIC_READ, GENERIC_WRITE},
+use std::mem;
+
+use windows::{
+    core::{HSTRING, PCWSTR},
+    Win32::{
+        Foundation::{CloseHandle, GENERIC_READ, GENERIC_WRITE, HANDLE},
+        Storage::FileSystem::{
+            CreateFileW, FILE_FLAG_OVERLAPPED, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+        },
+        System::IO::DeviceIoControl,
+    },
 };
 
 use crate::device_discovery::DeviceDiscovery;
-use crate::utils::{get_last_error, string_to_wide}; // 移除了 load/save
-use crate::{
-    constants::*,
-    types::{DeviceIds, KeyboardInput, MouseInput},
-};
+use crate::types::{DeviceIds, KeyboardInput, MouseInput};
+use crate::{constants::*, utils::get_last_error}; // get_last_error 仍然用于 IOCTL 的错误信息
 
 /// 创建虚拟HID设备，并返回发现的设备ID
 pub fn create_hid_devices() -> Result<DeviceIds> {
@@ -27,9 +27,9 @@ pub fn create_hid_devices() -> Result<DeviceIds> {
     if let Err(e) = create_single_hid_device(bus_handle, "mouse") {
         println!("[!] 发送创建鼠标请求时出错: {}", e);
     }
-    unsafe { CloseHandle(bus_handle) };
+    unsafe { CloseHandle(bus_handle).ok() }; // .ok() to ignore potential errors on close
 
-    sleep(Duration::from_millis(200));
+    std::thread::sleep(std::time::Duration::from_millis(200));
 
     let discovered_ids = DeviceDiscovery::discover_devices()?;
     if discovered_ids.is_empty() {
@@ -52,28 +52,28 @@ pub fn destroy_hid_devices(device_ids: &DeviceIds) -> Result<()> {
     if let Some(mouse_id) = device_ids.mouse_id {
         destroy_single_hid_device(bus_handle, mouse_id, "mouse")?;
     }
-    unsafe { CloseHandle(bus_handle) };
+    unsafe { CloseHandle(bus_handle).ok() };
 
     println!("\n[成功] 虚拟HID设备清理完毕。");
     Ok(())
 }
 
-pub(crate) fn open_bus_device() -> Result<winapi::um::winnt::HANDLE> {
-    let device_path_wide = string_to_wide(BUS_DEVICE_PATH);
+pub(crate) fn open_bus_device() -> Result<HANDLE> {
+    let device_path_hstring = HSTRING::from(BUS_DEVICE_PATH);
 
     let handle = unsafe {
         CreateFileW(
-            device_path_wide.as_ptr(),
-            GENERIC_READ | GENERIC_WRITE,
-            0,
-            std::ptr::null_mut(),
+            PCWSTR::from_raw(device_path_hstring.as_ptr()),
+            (GENERIC_READ | GENERIC_WRITE).0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            None,
             OPEN_EXISTING,
-            0,
-            std::ptr::null_mut(),
-        )
+            FILE_FLAG_OVERLAPPED,
+            None,
+        )?
     };
 
-    if handle == INVALID_HANDLE_VALUE {
+    if handle.is_invalid() {
         Err(anyhow!("打开总线设备失败: {}", get_last_error()))
     } else {
         println!("  - 总线设备句柄获取成功。");
@@ -81,10 +81,7 @@ pub(crate) fn open_bus_device() -> Result<winapi::um::winnt::HANDLE> {
     }
 }
 
-pub(crate) fn create_single_hid_device(
-    bus_handle: winapi::um::winnt::HANDLE,
-    device_type: &str,
-) -> Result<()> {
+pub(crate) fn create_single_hid_device(bus_handle: HANDLE, device_type: &str) -> Result<()> {
     println!("[+] 正在构建并发送'创建{}'的IOCTL数据包...", device_type);
 
     let (buffer_size, pid_vid_part, magic_int1, dev_type_flag, hid_desc) = match device_type {
@@ -172,27 +169,24 @@ pub(crate) fn create_single_hid_device(
         );
     }
 
-    let success = unsafe {
+    unsafe {
         DeviceIoControl(
             bus_handle,
             IOCTL_BUS_CREATE_DEVICE,
-            input_buffer.as_mut_ptr() as *mut _,
-            input_buffer.len() as DWORD,
-            output_buffer.as_mut_ptr() as *mut _,
-            output_buffer.len() as DWORD,
-            &mut bytes_returned,
-            std::ptr::null_mut(),
+            Some(input_buffer.as_ptr() as *const _),
+            input_buffer.len() as _,
+            Some(output_buffer.as_mut_ptr() as *mut _),
+            output_buffer.len() as _,
+            Some(&mut bytes_returned),
+            None,
         )
-    };
+    }?;
 
-    if success == 0 {
-        return Err(anyhow!("发送IOCTL请求失败: {}", get_last_error()));
-    }
     Ok(())
 }
 
 pub(crate) fn destroy_single_hid_device(
-    bus_handle: winapi::um::winnt::HANDLE,
+    bus_handle: HANDLE,
     device_id: u32,
     device_type: &str,
 ) -> Result<()> {
@@ -207,7 +201,6 @@ pub(crate) fn destroy_single_hid_device(
         1u32
     };
     let mut input_buffer = vec![0u8; 20];
-    let mut bytes_returned = 0;
 
     unsafe {
         std::ptr::copy_nonoverlapping(
@@ -227,84 +220,59 @@ pub(crate) fn destroy_single_hid_device(
         );
     }
 
-    let success = unsafe {
+    unsafe {
         DeviceIoControl(
             bus_handle,
             IOCTL_BUS_DESTROY_DEVICE,
-            input_buffer.as_mut_ptr() as *mut _,
-            input_buffer.len() as DWORD,
-            std::ptr::null_mut(),
+            Some(input_buffer.as_ptr() as *const _),
+            input_buffer.len() as _,
+            None,
             0,
-            &mut bytes_returned,
-            std::ptr::null_mut(),
+            None,
+            None,
         )
-    };
+    }?;
 
-    if success == 0 {
-        return Err(anyhow!(
-            "销毁设备 {} 时出错: {}",
-            device_id,
-            get_last_error()
-        ));
-    }
     println!("  - 成功发送销毁请求。");
     Ok(())
 }
 
 /// 发送鼠标输入到虚拟设备
-pub fn send_mouse_input(
-    device_handle: winapi::um::winnt::HANDLE,
-    input: &MouseInput,
-) -> Result<()> {
-    let mut bytes_returned = 0;
-    let success = unsafe {
+pub fn send_mouse_input(device_handle: HANDLE, input: &MouseInput) -> Result<()> {
+    unsafe {
         DeviceIoControl(
             device_handle,
             IOCTL_WRITE_SECONDARY_DEVICE,
-            input as *const _ as *mut _,
-            std::mem::size_of::<MouseInput>() as DWORD,
-            core::ptr::null_mut(),
+            Some(input as *const _ as *const _),
+            mem::size_of::<MouseInput>() as _,
+            None,
             0,
-            &mut bytes_returned,
-            core::ptr::null_mut(),
+            None,
+            None,
         )
-    };
-
-    if success == 0 {
-        Err(anyhow!("发送鼠标输入失败: {}", get_last_error()))
-    } else {
-        Ok(())
-    }
+    }?;
+    Ok(())
 }
 
 /// 发送键盘输入到虚拟设备
-pub fn send_keyboard_input(
-    device_handle: winapi::um::winnt::HANDLE,
-    input: &KeyboardInput,
-) -> Result<()> {
-    let mut bytes_returned = 0;
-    let success = unsafe {
+pub fn send_keyboard_input(device_handle: HANDLE, input: &KeyboardInput) -> Result<()> {
+    unsafe {
         DeviceIoControl(
             device_handle,
-            IOCTL_WRITE_SECONDARY_DEVICE,
-            input as *const _ as *mut _,
-            std::mem::size_of::<KeyboardInput>() as DWORD,
-            core::ptr::null_mut(),
+            IOCTL_WRITE_PRIMARY_DEVICE,
+            Some(input as *const _ as *const _),
+            mem::size_of::<KeyboardInput>() as _,
+            None,
             0,
-            &mut bytes_returned,
-            core::ptr::null_mut(),
+            None,
+            None,
         )
-    };
-
-    if success == 0 {
-        Err(anyhow!("发送键盘输入失败: {}", get_last_error()))
-    } else {
-        Ok(())
-    }
+    }?;
+    Ok(())
 }
 
 /// 打开可用的虚拟设备句柄
-pub fn open_vulnerable_device() -> Result<winapi::um::winnt::HANDLE> {
+pub fn open_vulnerable_device() -> Result<HANDLE> {
     // 设备路径模板，使用占位符替换序号
     // const DEVICE_PATH_TEMPLATE: &str =;
     // 尝试的设备序号范围
@@ -314,23 +282,25 @@ pub fn open_vulnerable_device() -> Result<winapi::um::winnt::HANDLE> {
             "\\\\.\\ROOT#SYSTEM#000{}#{{1abc05c0-c378-41b9-9cef-df1aba82b015}}",
             number
         );
-        let path_wide = string_to_wide(&path);
+        let path_hstring = HSTRING::from(&path);
 
         let handle = unsafe {
             CreateFileW(
-                path_wide.as_ptr(),
-                GENERIC_WRITE,
-                0,
-                core::ptr::null_mut(),
+                PCWSTR::from_raw(path_hstring.as_ptr()),
+                GENERIC_WRITE.0,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                None,
                 OPEN_EXISTING,
-                0,
-                core::ptr::null_mut(),
+                Default::default(),
+                None,
             )
         };
 
-        if handle != INVALID_HANDLE_VALUE {
-            println!("  - 成功打开虚拟设备: {}", path);
-            return Ok(handle);
+        if let Ok(h) = handle {
+            if !h.is_invalid() {
+                println!("  - 成功打开虚拟设备: {}", path);
+                return Ok(h);
+            }
         }
     }
 

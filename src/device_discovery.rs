@@ -1,27 +1,20 @@
 use crate::constants::{
     HARDWARE_ID, PRODUCT_ID_VIRTUAL_KEYBOARD, PRODUCT_ID_VIRTUAL_MOUSE, VENDOR_ID_LOGITECH,
 };
+
 use crate::types::DeviceIds;
 use anyhow::{anyhow, Result};
-use std::ffi::OsString;
-use std::mem;
-use std::os::windows::prelude::OsStringExt;
-use std::ptr;
-use winapi::um::cfgmgr32::DEVINST;
-use winapi::{
-    shared::{minwindef::DWORD, ntdef::ULONG},
-    um::{
-        cfgmgr32::{
-            CM_Get_Child, CM_Get_Device_IDW, CM_Get_Sibling, CR_SUCCESS, MAX_DEVICE_ID_LEN,
-        },
-        setupapi::{
-            SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInfo, SetupDiGetClassDevsW,
-            SetupDiGetDeviceRegistryPropertyW, DIGCF_ALLCLASSES, DIGCF_PRESENT, SPDRP_HARDWAREID,
-            SP_DEVINFO_DATA,
-        },
-    },
+use core::mem;
+
+// 引入 windows-rs 的模块和类型
+use windows::Win32::Devices::DeviceAndDriverInstallation::{
+    CM_Get_Child, CM_Get_Device_IDW, CM_Get_Sibling, SetupDiDestroyDeviceInfoList,
+    SetupDiEnumDeviceInfo, SetupDiGetClassDevsW, SetupDiGetDeviceRegistryPropertyW, CONFIGRET,
+    DIGCF_ALLCLASSES, DIGCF_PRESENT, HDEVINFO, MAX_DEVICE_ID_LEN, SPDRP_HARDWAREID,
+    SP_DEVINFO_DATA,
 };
 
+type DEVINST = u32;
 /// 设备发现管理器
 pub struct DeviceDiscovery;
 
@@ -38,7 +31,6 @@ impl DeviceDiscovery {
                     "[!] 未找到核心总线设备 ('{}')。请确保驱动已安装。",
                     HARDWARE_ID
                 );
-                // 返回一个空的 DeviceIds，而不是错误，因为这可能是正常状态
                 return Ok(DeviceIds::new());
             }
         };
@@ -57,14 +49,11 @@ impl DeviceDiscovery {
         // 3. 遍历子设备，获取它们的实例ID并解析
         for child in child_devinsts {
             let mut buffer = [0u16; MAX_DEVICE_ID_LEN as usize];
-            if unsafe { CM_Get_Device_IDW(child, buffer.as_mut_ptr(), buffer.len() as ULONG, 0) }
-                == CR_SUCCESS
-            {
-                // 将宽字符转换为普通字符串
-                let instance_id = OsString::from_wide(&buffer)
-                    .into_string()
-                    .unwrap_or_default()
-                    // 清理尾部的空字符
+            let result: CONFIGRET = unsafe { CM_Get_Device_IDW(child, &mut buffer, 0) };
+
+            if result.0 == 0 {
+                // CR_SUCCESS in windows-rs is typically checked by its value
+                let instance_id = String::from_utf16_lossy(&buffer)
                     .split('\0')
                     .next()
                     .unwrap_or("")
@@ -100,16 +89,17 @@ impl DeviceDiscovery {
 
 /// 查找具有特定硬件ID的设备，并返回其DEVINST
 fn find_bus_devinst() -> Result<Option<DEVINST>> {
-    let device_info_set = unsafe {
+    let device_info_set: HDEVINFO = unsafe {
         SetupDiGetClassDevsW(
-            ptr::null_mut(),
-            ptr::null_mut(),
-            ptr::null_mut(),
+            None, // class_guid is optional
+            None, // enumerator is optional
+            None, // hwnd_parent is optional
             DIGCF_ALLCLASSES | DIGCF_PRESENT,
-        )
+        )?
     };
-    if device_info_set.is_null() || device_info_set == winapi::um::handleapi::INVALID_HANDLE_VALUE {
-        return Err(anyhow!("无法获取设备信息集。"));
+
+    if device_info_set.is_invalid() {
+        return Err(anyhow!("获取设备信息集失败 (INVALID_HANDLE_VALUE)。"));
     }
 
     let mut index = 0;
@@ -117,90 +107,93 @@ fn find_bus_devinst() -> Result<Option<DEVINST>> {
         let mut dev_info_data: SP_DEVINFO_DATA = unsafe { mem::zeroed() };
         dev_info_data.cbSize = mem::size_of::<SP_DEVINFO_DATA>() as u32;
 
-        if unsafe { SetupDiEnumDeviceInfo(device_info_set, index, &mut dev_info_data) } == 0 {
-            break;
+        if unsafe { SetupDiEnumDeviceInfo(device_info_set, index, &mut dev_info_data) }.is_err() {
+            break; // 枚举完成或出错
         }
 
         if let Some(hwid) = get_device_hardware_id(device_info_set, &mut dev_info_data) {
-            // 我们寻找硬件ID为 "root\LGHUBVirtualBus" 的设备
             if hwid.to_uppercase().contains(&HARDWARE_ID.to_uppercase()) {
-                unsafe { SetupDiDestroyDeviceInfoList(device_info_set) };
+                unsafe { SetupDiDestroyDeviceInfoList(device_info_set) }?;
                 return Ok(Some(dev_info_data.DevInst));
             }
         }
         index += 1;
     }
 
-    unsafe { SetupDiDestroyDeviceInfoList(device_info_set) };
+    unsafe { SetupDiDestroyDeviceInfoList(device_info_set) }?;
     Ok(None)
 }
 
 /// 获取一个设备的所有子设备
 fn get_child_devinsts(parent: DEVINST) -> Result<Vec<DEVINST>> {
     let mut children = Vec::new();
-    let mut child_inst = 0;
+    let mut child_inst: DEVINST = unsafe { mem::zeroed() };
 
     // 获取第一个子节点
-    if unsafe { CM_Get_Child(&mut child_inst, parent, 0) } != CR_SUCCESS {
+    let mut result: CONFIGRET = unsafe { CM_Get_Child(&mut child_inst, parent, 0) };
+    if result.0 != 0 {
+        // CR_SUCCESS is 0
         return Ok(children); // 没有子节点
     }
     children.push(child_inst);
 
     // 循环获取所有兄弟节点
     loop {
-        let mut sibling_inst = 0;
-        if unsafe { CM_Get_Sibling(&mut sibling_inst, child_inst, 0) } != CR_SUCCESS {
+        let mut sibling_inst: DEVINST = unsafe { mem::zeroed() };
+        result = unsafe { CM_Get_Sibling(&mut sibling_inst, child_inst, 0) };
+        if result.0 != 0 {
             break; // 没有更多兄弟节点
         }
         children.push(sibling_inst);
         child_inst = sibling_inst;
     }
-
     Ok(children)
 }
 
 /// 从设备信息集中获取设备的硬件ID
 fn get_device_hardware_id(
-    dev_info_set: winapi::um::setupapi::HDEVINFO,
+    dev_info_set: HDEVINFO,
     dev_info_data: &mut SP_DEVINFO_DATA,
 ) -> Option<String> {
-    let mut required_size: DWORD = 0;
+    let mut required_size: u32 = 0;
 
-    // 第一次调用获取大小
-    unsafe {
+    // 第一次调用获取大小。windows-rs 的函数在失败时会返回 Error，我们需要捕获它。
+    let _ = unsafe {
         SetupDiGetDeviceRegistryPropertyW(
             dev_info_set,
             dev_info_data,
             SPDRP_HARDWAREID,
-            ptr::null_mut(),
-            ptr::null_mut(),
-            0,
-            &mut required_size,
-        );
-    }
+            None,
+            None,
+            Some(&mut required_size),
+        )
+    };
 
+    // 检查是否是因为缓冲区不足而“失败”
     if required_size == 0 {
         return None;
     }
 
-    let mut buffer = vec![0u16; required_size as usize / 2];
-    let success = unsafe {
+    let mut buffer = vec![0u8; required_size as usize];
+    if unsafe {
         SetupDiGetDeviceRegistryPropertyW(
             dev_info_set,
             dev_info_data,
             SPDRP_HARDWAREID,
-            ptr::null_mut(),
-            buffer.as_mut_ptr() as *mut u8,
-            required_size,
-            ptr::null_mut(),
+            None,
+            Some(&mut buffer),
+            Some(&mut required_size),
         )
-    };
-
-    if success != 0 {
+    }
+    .is_ok()
+    {
+        // 将 u8 buffer 转换为 u16 slice
+        let wide_slice: &[u16] =
+            unsafe { std::slice::from_raw_parts(buffer.as_ptr() as *const u16, buffer.len() / 2) };
         Some(
-            OsString::from_wide(&buffer)
-                .into_string()
-                .unwrap_or_default(),
+            String::from_utf16_lossy(wide_slice)
+                .trim_end_matches('\0')
+                .to_string(),
         )
     } else {
         None
