@@ -4,6 +4,7 @@
 use std::ffi::CString;
 use std::ptr;
 use std::sync::{Mutex, OnceLock};
+use std::time::Instant;
 
 use anyhow::Result;
 
@@ -224,49 +225,58 @@ pub extern "C" fn vhid_get_last_error(buffer: *mut i8, size: usize) -> usize {
     copy_size.saturating_sub(1)
 }
 
+/// 将鼠标移动到屏幕上的绝对坐标位置。
 #[no_mangle]
 pub extern "C" fn vhid_mouse_move_absolute(x: i32, y: i32) -> VHidResult {
     // 获取屏幕尺寸以进行边界检查
     let screen_width = unsafe { GetSystemMetrics(SM_CXSCREEN) };
     let screen_height = unsafe { GetSystemMetrics(SM_CYSCREEN) };
 
-    // 将目标坐标限制在屏幕范围内
     let target_x = x.clamp(0, screen_width - 1);
     let target_y = y.clamp(0, screen_height - 1);
 
-    // 获取当前鼠标位置
-    let mut current_pos = POINT { x: 0, y: 0 };
-    if unsafe { GetCursorPos(&mut current_pos) }.is_err() {
-        return VHidResult::Error;
-    }
+    // 设置一个超时，以防万一卡在循环中
+    let timeout = Instant::now() + std::time::Duration::from_secs(3);
 
-    // 计算总的相对位移
-    let mut dx = target_x - current_pos.x;
-    let mut dy = target_y - current_pos.y;
-
-    // 循环发送小的相对移动报告，直到到达目标位置
-    while dx != 0 || dy != 0 {
-        // 计算本次要移动的距离（最大为 127）
-        let move_x = dx.clamp(-127, 127) as i8;
-        let move_y = dy.clamp(-127, 127) as i8;
-
-        // 发送带有当前按键状态的移动报告
-        if vhid_mouse_move(move_x, move_y) != VHidResult::Success {
-            // 如果中途某次移动失败，则中止
+    loop {
+        // 1. 获取当前鼠标的真实位置
+        let mut current_pos = POINT { x: 0, y: 0 };
+        if unsafe { GetCursorPos(&mut current_pos) }.is_err() {
             return VHidResult::Error;
         }
 
-        // 更新剩余的位移
-        dx -= move_x as i32;
-        dy -= move_y as i32;
+        // 2. 计算到目标的剩余向量
+        let dx = target_x - current_pos.x;
+        let dy = target_y - current_pos.y;
 
-        // 添加一个极小的延迟，让系统有时间处理移动，避免移动过快
-        std::thread::sleep(std::time::Duration::from_millis(1));
+        // 3. 如果已经非常接近或到达目标，则成功退出
+        // 使用一个小的容差范围 (e.g., 1像素) 来避免在目标点附近微小振动
+        if dx.abs() <= 1 && dy.abs() <= 1 {
+            break;
+        }
+
+        // 4. 计算本次要移动的步长
+        // 这是最关键的简化：直接朝着目标移动，步长最大为127
+        let move_x = dx.clamp(-127, 127) as i8;
+        let move_y = dy.clamp(-127, 127) as i8;
+
+        // 5. 发送移动指令，并保持当前的按键状态
+        if vhid_mouse_move(move_x, move_y) != VHidResult::Success {
+            return VHidResult::Error;
+        }
+
+        // 6. 检查是否超时
+        if Instant::now() > timeout {
+            return VHidResult::Error; // 移动超时，可能被卡住
+        }
+
+        // 7. 给操作系统和目标应用程序足够的反应时间
+        // 8ms 对应 125Hz 的刷新率，是一个比较安全和流畅的间隔
+        std::thread::sleep(std::time::Duration::from_millis(8));
     }
 
     VHidResult::Success
 }
-
 /// 移动鼠标，同时保持当前的按键状态
 #[no_mangle]
 pub extern "C" fn vhid_mouse_move(x: i8, y: i8) -> VHidResult {
