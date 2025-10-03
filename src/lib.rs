@@ -13,12 +13,12 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetCursorPos, GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN,
 };
 
-mod constants;
-mod device_discovery;
-mod driver_manager;
-mod hid_manager;
-mod types;
-mod utils;
+pub mod constants;
+pub mod device_discovery;
+pub mod driver_manager;
+pub mod hid_manager;
+pub mod types;
+pub mod utils;
 
 use crate::device_discovery::DeviceDiscovery;
 use crate::types::{DeviceIds, KeyboardInput, MouseInput};
