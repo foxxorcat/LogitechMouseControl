@@ -2,67 +2,69 @@ import sys
 import os
 import time
 
-# 获取当前文件的绝对路径
+# Add the parent directory to the system path to find the logi_vhid module
 current_path = os.path.abspath(__file__)
-# 计算父目录（examples的上一级目录，即python目录）
 parent_dir = os.path.dirname(os.path.dirname(current_path))
-# 将父目录添加到系统路径
 sys.path.append(parent_dir)
 
-import time
-from logi_vhid import LogiVHid, KeyCodes,VHidResult
+from logi_vhid import LogiVHid, KeyCodes, VHidResult
 
 class AutoController:
+    """An example automation controller using LogiVHid."""
+    
     def __init__(self):
         self.vhid = LogiVHid()
         self.initialized = False
     
     def start(self):
-        """启动控制器"""
-        print("启动虚拟HID控制器...")
+        """Starts the controller and initializes the virtual HID system."""
+        print("Initializing Virtual HID system...")
         result = self.vhid.initialize()
         if result != VHidResult.Success:
-            raise Exception(f"初始化失败: {self.vhid.get_last_error()}")
+            raise Exception(f"Initialization failed: {self.vhid.get_last_error()}")
         
-        result = self.vhid.create_devices()
+        print("Powering on virtual devices...")
+        result = self.vhid.power_on()
         if result != VHidResult.Success:
-            raise Exception(f"创建设备失败: {self.vhid.get_last_error()}")
-        
+            self.vhid.cleanup() # Clean up even if power on fails
+            raise Exception(f"Failed to power on devices: {self.vhid.get_last_error()}")
+
         self.initialized = True
-        time.sleep(2)  # 等待设备就绪
-        print("控制器就绪")
+        print("Controller ready. Waiting for OS to recognize devices...")
+        time.sleep(2)  # Wait for the OS to recognize the new virtual devices
     
     def stop(self):
-        """停止控制器"""
+        """Stops the controller and cleans up resources."""
         if self.initialized:
-            print("停止控制器...")
-            self.vhid.destroy_devices()
+            print("Powering off virtual devices...")
+            self.vhid.power_off()
+            print("Cleaning up system resources...")
             self.vhid.cleanup()
             self.initialized = False
     
     def draw_square(self, size=50):
-        """绘制正方形"""
-        print(f"绘制 {size}x{size} 正方形")
-        # 向右
-        for i in range(size):
-            self.vhid.move_mouse(1, 0)
+        """Moves the mouse in a square pattern."""
+        print(f"Drawing a {size}x{size} square with the mouse.")
+        # Move right
+        for _ in range(size):
+            self.vhid.move_mouse(x=1, y=0)
             time.sleep(0.01)
-        # 向下
-        for i in range(size):
-            self.vhid.move_mouse(0, 1)
+        # Move down
+        for _ in range(size):
+            self.vhid.move_mouse(x=0, y=1)
             time.sleep(0.01)
-        # 向左
-        for i in range(size):
-            self.vhid.move_mouse(-1, 0)
+        # Move left
+        for _ in range(size):
+            self.vhid.move_mouse(x=-1, y=0)
             time.sleep(0.01)
-        # 向上
-        for i in range(size):
-            self.vhid.move_mouse(0, -1)
+        # Move up
+        for _ in range(size):
+            self.vhid.move_mouse(x=0, y=-1)
             time.sleep(0.01)
     
-    def type_text(self, text):
-        """输入文本"""
-        print(f"输入文本: {text}")
+    def type_text(self, text: str):
+        """Types the given text using virtual key presses."""
+        print(f"Typing text: {text}")
         key_map = {
             'a': KeyCodes.A, 'b': KeyCodes.B, 'c': KeyCodes.C, 'd': KeyCodes.D,
             'e': KeyCodes.E, 'f': KeyCodes.F, 'g': KeyCodes.G, 'h': KeyCodes.H,
@@ -80,25 +82,26 @@ class AutoController:
         for char in text.lower():
             if char in key_map:
                 self.vhid.key_tap(key_map[char])
+                # The native key_tap has a built-in delay, so this can be shorter
                 time.sleep(0.05)
     
     def run_demo(self):
-        """运行演示"""
-        print("开始自动化演示...")
+        """Runs a demonstration of the controller's capabilities."""
+        print("Starting automation demo...")
         
-        # 绘制图形
+        # Draw a shape with the mouse
         self.draw_square(30)
         time.sleep(1)
         
-        # 输入文本
+        # Type some text
         self.type_text("hello world")
         time.sleep(1)
         
-        # 按下回车
+        # Press Enter
         self.vhid.key_tap(KeyCodes.ENTER)
         time.sleep(0.5)
         
-        print("演示完成!")
+        print("Demo finished!")
 
 def main():
     controller = AutoController()
@@ -107,11 +110,10 @@ def main():
         controller.start()
         controller.run_demo()
         
-        # 等待用户输入
-        input("按Enter键继续...")
+        input("Press Enter to exit...")
         
     except Exception as e:
-        print(f"错误: {e}")
+        print(f"An error occurred: {e}")
     
     finally:
         controller.stop()

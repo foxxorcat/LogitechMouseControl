@@ -5,6 +5,7 @@ from ctypes import wintypes, Structure, c_int8, c_uint8, c_int32, POINTER
 from enum import IntEnum
 
 class VHidResult(IntEnum):
+    """Result status codes from the VHID library."""
     Success = 0
     Error = 1
     DeviceNotFound = 2
@@ -13,29 +14,42 @@ class VHidResult(IntEnum):
     NotInitialized = 5
 
 class MouseInput(Structure):
+    """Represents a mouse input report."""
     _fields_ = [
-        ('button', c_int8),   # 按钮状态
-        ('x', c_int8),        # X轴移动 (-127 到 127)
-        ('y', c_int8),        # Y轴移动 (-127 到 127)
-        ('wheel', c_int8),    # 滚轮移动
-        ('unk1', c_int8),     # 保留字段
+        ('button', c_int8),   # Button status (bitmask)
+        ('x', c_int8),        # X-axis movement (-127 to 127)
+        ('y', c_int8),        # Y-axis movement (-127 to 127)
+        ('wheel', c_int8),    # Wheel movement
+        ('reserved', c_int8), # Reserved field
+    ]
+
+class KeyboardInput(Structure):
+    """Represents a keyboard input report."""
+    _fields_ = [
+        ('modifiers', c_uint8),      # Modifier keys (bitmask)
+        ('reserved', c_uint8),       # Reserved field
+        ('keys', c_uint8 * 6),       # Array of pressed key codes
     ]
 
 class MouseButtons(IntEnum):
-    NONE = 0
+    """Mouse button constants (bitmask)."""
     LEFT = 1
     RIGHT = 2
-    MIDDLE = 3
-    
-class KeyboardInput(Structure):
-    _fields_ = [
-        ('modifiers', c_uint8),           # 修饰键
-        ('reserved', c_uint8),            # 保留字段
-        ('keys', c_uint8 * 6),            # 按键码数组
-    ]
+    MIDDLE = 4
+
+class KeyModifiers(IntEnum):
+    """Keyboard modifier constants (bitmask)."""
+    LEFT_CTRL = 0x01
+    LEFT_SHIFT = 0x02
+    LEFT_ALT = 0x04
+    LEFT_GUI = 0x08
+    RIGHT_CTRL = 0x10
+    RIGHT_SHIFT = 0x20
+    RIGHT_ALT = 0x40
+    RIGHT_GUI = 0x80
 
 class LogiVHid:
-    """罗技虚拟HID设备Python封装类"""
+    """Python wrapper for the Logitech Virtual HID device library."""
     
     def __init__(self, dll_path=None):
         if dll_path is None:
@@ -46,7 +60,7 @@ class LogiVHid:
         self._initialized = False
     
     def _find_dll(self):
-        """自动查找DLL文件"""
+        """Automatically find the DLL file in common paths."""
         possible_paths = [
             "logi_vhid.dll",
             "target/release/logi_vhid.dll",
@@ -57,229 +71,174 @@ class LogiVHid:
         
         for path in possible_paths:
             if os.path.exists(path):
-                print(f"[+] 找到DLL: {path}")
-                return path
+                print(f"[+] Found DLL: {os.path.abspath(path)}")
+                return os.path.abspath(path)
         
-        raise FileNotFoundError("未找到 logi_vhid.dll，请先编译动态库")
+        raise FileNotFoundError("Could not find logi_vhid.dll. Please compile the Rust library first.")
     
     def _setup_prototypes(self):
-        """设置函数原型"""
-        # 核心函数
+        """Set up function prototypes for the loaded DLL."""
+        # Core functions
         self._dll.vhid_initialize.restype = VHidResult
         self._dll.vhid_cleanup.restype = VHidResult
-        self._dll.vhid_create_devices.restype = VHidResult
-        self._dll.vhid_destroy_devices.restype = VHidResult
-        
-        # 输入函数
-        self._dll.vhid_move_mouse.argtypes = [POINTER(MouseInput)]
-        self._dll.vhid_move_mouse.restype = VHidResult
-        
-        self._dll.vhid_send_keyboard.argtypes = [POINTER(KeyboardInput)]
-        self._dll.vhid_send_keyboard.restype = VHidResult
-        
-        # 便捷函数
+        self._dll.vhid_power_on.restype = VHidResult
+        self._dll.vhid_power_off.restype = VHidResult
+        self._dll.vhid_reset_state.restype = VHidResult
+
+        # Raw report sending functions
+        self._dll.vhid_send_mouse_report.argtypes = [POINTER(MouseInput)]
+        self._dll.vhid_send_mouse_report.restype = VHidResult
+        self._dll.vhid_send_keyboard_report.argtypes = [POINTER(KeyboardInput)]
+        self._dll.vhid_send_keyboard_report.restype = VHidResult
+
+        # High-level mouse functions
+        self._dll.vhid_mouse_move_absolute.argtypes = [c_int32, c_int32]
+        self._dll.vhid_mouse_move_absolute.restype = VHidResult
         self._dll.vhid_mouse_move.argtypes = [c_int8, c_int8]
         self._dll.vhid_mouse_move.restype = VHidResult
-        
+        self._dll.vhid_mouse_down.argtypes = [c_int8]
+        self._dll.vhid_mouse_down.restype = VHidResult
+        self._dll.vhid_mouse_up.argtypes = [c_int8]
+        self._dll.vhid_mouse_up.restype = VHidResult
         self._dll.vhid_mouse_click.argtypes = [c_int8]
         self._dll.vhid_mouse_click.restype = VHidResult
-        
         self._dll.vhid_mouse_wheel.argtypes = [c_int8]
         self._dll.vhid_mouse_wheel.restype = VHidResult
-        
-        self._dll.vhid_mouse_down.argtypes = [ctypes.c_int8]
-        self._dll.vhid_mouse_down.restype = VHidResult
-        self._dll.vhid_mouse_up.restype = VHidResult
-        
-        self._dll.vhid_key_press.argtypes = [c_uint8]
-        self._dll.vhid_key_press.restype = VHidResult
-        
-        self._dll.vhid_key_release.restype = VHidResult
-        
-        # 工具函数
-        self._dll.vhid_get_last_error.argtypes = [wintypes.LPSTR, wintypes.DWORD]
-        self._dll.vhid_get_last_error.restype = wintypes.DWORD
-        
-        self._dll.vhid_devices_created.restype = VHidResult
+
+        # High-level keyboard functions
+        self._dll.vhid_key_down.argtypes = [c_uint8]
+        self._dll.vhid_key_down.restype = VHidResult
+        self._dll.vhid_key_up.argtypes = [c_uint8]
+        self._dll.vhid_key_up.restype = VHidResult
+        self._dll.vhid_modifier_down.argtypes = [c_uint8]
+        self._dll.vhid_modifier_down.restype = VHidResult
+        self._dll.vhid_modifier_up.argtypes = [c_uint8]
+        self._dll.vhid_modifier_up.restype = VHidResult
+        self._dll.vhid_key_tap.argtypes = [c_uint8]
+        self._dll.vhid_key_tap.restype = VHidResult
+
+        # Utility functions
+        self._dll.vhid_get_last_error.argtypes = [wintypes.LPSTR, ctypes.c_size_t]
+        self._dll.vhid_get_last_error.restype = ctypes.c_size_t
     
-    def initialize(self):
-        """初始化虚拟设备系统"""
+    def initialize(self) -> VHidResult:
+        """Initializes the virtual device system's manager."""
         result = VHidResult(self._dll.vhid_initialize())
         if result == VHidResult.Success:
             self._initialized = True
         return result
     
-    def cleanup(self):
-        """清理虚拟设备系统"""
+    def cleanup(self) -> VHidResult:
+        """Cleans up the virtual device system's manager."""
         result = VHidResult(self._dll.vhid_cleanup())
         if result == VHidResult.Success:
             self._initialized = False
         return result
-    
-    def create_devices(self):
-        """创建虚拟HID设备"""
-        if not self._initialized:
-            return VHidResult.NotInitialized
-        return VHidResult(self._dll.vhid_create_devices())
-    
-    def destroy_devices(self):
-        """销毁虚拟HID设备"""
-        if not self._initialized:
-            return VHidResult.NotInitialized
-        return VHidResult(self._dll.vhid_destroy_devices())
-    
-    def move_mouse(self, x=0, y=0):
-        """移动鼠标相对坐标
-        
-        Args:
-            x: X轴移动量 (-127 到 127)
-            y: Y轴移动量 (-127 到 127)
-        """
-        if not self._initialized:
-            return VHidResult.NotInitialized
+
+    def power_on(self) -> VHidResult:
+        """Creates or finds the virtual devices, making them ready for input."""
+        if not self._initialized: return VHidResult.NotInitialized
+        return VHidResult(self._dll.vhid_power_on())
+
+    def power_off(self) -> VHidResult:
+        """Removes the virtual devices from the system."""
+        if not self._initialized: return VHidResult.NotInitialized
+        return VHidResult(self._dll.vhid_power_off())
+
+    def reset_state(self) -> VHidResult:
+        """Resets all internal states and sends 'all up' reports."""
+        if not self._initialized: return VHidResult.NotInitialized
+        return VHidResult(self._dll.vhid_reset_state())
+
+    def send_mouse_report(self, report: MouseInput) -> VHidResult:
+        """Sends a complete mouse report. Requires power_on() to have been called."""
+        if not self._initialized: return VHidResult.NotInitialized
+        return VHidResult(self._dll.vhid_send_mouse_report(ctypes.byref(report)))
+
+    def send_keyboard_report(self, report: KeyboardInput) -> VHidResult:
+        """Sends a complete keyboard report. Requires power_on() to have been called."""
+        if not self._initialized: return VHidResult.NotInitialized
+        return VHidResult(self._dll.vhid_send_keyboard_report(ctypes.byref(report)))
+
+    def move_mouse_absolute(self, x: int, y: int) -> VHidResult:
+        """Moves the mouse to absolute screen coordinates."""
+        if not self._initialized: return VHidResult.NotInitialized
+        return VHidResult(self._dll.vhid_mouse_move_absolute(x, y))
+
+    def move_mouse(self, x: int, y: int) -> VHidResult:
+        """Moves the mouse by a relative offset."""
+        if not self._initialized: return VHidResult.NotInitialized
         return VHidResult(self._dll.vhid_mouse_move(x, y))
     
-    def mouse_click(self, button=1):
-        """鼠标点击
-        
-        Args:
-            button: 1-左键, 2-右键, 3-中键
-        """
-        if not self._initialized:
-            return VHidResult.NotInitialized
-        return VHidResult(self._dll.vhid_mouse_click(button))
+    def mouse_down(self, button: MouseButtons) -> VHidResult:
+        """Presses a mouse button."""
+        if not self._initialized: return VHidResult.NotInitialized
+        return VHidResult(self._dll.vhid_mouse_down(button.value))
+
+    def mouse_up(self, button: MouseButtons) -> VHidResult:
+        """Releases a mouse button."""
+        if not self._initialized: return VHidResult.NotInitialized
+        return VHidResult(self._dll.vhid_mouse_up(button.value))
+
+    def mouse_click(self, button: MouseButtons) -> VHidResult:
+        """Performs a mouse click (down and up)."""
+        if not self._initialized: return VHidResult.NotInitialized
+        return VHidResult(self._dll.vhid_mouse_click(button.value))
     
-    def mouse_wheel(self, delta=1):
-        """鼠标滚轮
-        
-        Args:
-            delta: 滚轮增量，正数向上，负数向下
-        """
-        if not self._initialized:
-            return VHidResult.NotInitialized
+    def mouse_wheel(self, delta: int) -> VHidResult:
+        """Scrolls the mouse wheel."""
+        if not self._initialized: return VHidResult.NotInitialized
         return VHidResult(self._dll.vhid_mouse_wheel(delta))
+
+    def key_down(self, key_code: int) -> VHidResult:
+        """Presses a keyboard key."""
+        if not self._initialized: return VHidResult.NotInitialized
+        return VHidResult(self._dll.vhid_key_down(key_code))
+
+    def key_up(self, key_code: int) -> VHidResult:
+        """Releases a keyboard key."""
+        if not self._initialized: return VHidResult.NotInitialized
+        return VHidResult(self._dll.vhid_key_up(key_code))
+
+    def modifier_down(self, modifier: KeyModifiers) -> VHidResult:
+        """Presses a modifier key (Ctrl, Shift, etc.)."""
+        if not self._initialized: return VHidResult.NotInitialized
+        return VHidResult(self._dll.vhid_modifier_down(modifier.value))
+
+    def modifier_up(self, modifier: KeyModifiers) -> VHidResult:
+        """Releases a modifier key."""
+        if not self._initialized: return VHidResult.NotInitialized
+        return VHidResult(self._dll.vhid_modifier_up(modifier.value))
     
-    def mouse_down(self, button: MouseButtons = MouseButtons.LEFT) -> VHidResult:
-        return self._dll.vhid_mouse_down(button)
-        
-    def mouse_up(self) -> VHidResult:
-        return self._dll.vhid_mouse_up()
-    
-    def key_press(self, key_code):
-        """按下单个键盘按键
-        
-        Args:
-            key_code: HID键码
-        """
-        if not self._initialized:
-            return VHidResult.NotInitialized
-        return VHidResult(self._dll.vhid_key_press(key_code))
-    
-    def key_release(self):
-        """释放所有按键"""
-        if not self._initialized:
-            return VHidResult.NotInitialized
-        return VHidResult(self._dll.vhid_key_release())
-    
-    def key_tap(self, key_code, delay=0.1):
-        """按下并释放按键（组合操作）
-        
-        Args:
-            key_code: HID键码
-            delay: 按下和释放之间的延迟（秒）
-        """
-        result = self.key_press(key_code)
-        if result != VHidResult.Success:
-            return result
-        
-        time.sleep(delay)
-        return self.key_release()
-    
-    def get_last_error(self):
-        """获取最后错误信息"""
+    def key_tap(self, key_code: int) -> VHidResult:
+        """Presses and releases a key using the native library function."""
+        if not self._initialized: return VHidResult.NotInitialized
+        return VHidResult(self._dll.vhid_key_tap(key_code))
+
+    def get_last_error(self) -> str:
+        """Gets the last error message from the library."""
         buffer = ctypes.create_string_buffer(256)
         length = self._dll.vhid_get_last_error(buffer, 256)
         if length > 0:
             return buffer.value.decode('utf-8', errors='ignore')
         return "Unknown error"
     
-    def devices_created(self):
-        """检查设备是否已创建"""
-        return self._dll.vhid_devices_created() != 0
-    
-    def is_initialized(self):
-        """检查是否已初始化"""
+    def is_initialized(self) -> bool:
+        """Checks if the library is initialized."""
         return self._initialized
 
-# HID键码常量
+# HID Usage Page 7: Keyboard/Keypad
 class KeyCodes:
-    A = 0x04
-    B = 0x05
-    C = 0x06
-    D = 0x07
-    E = 0x08
-    F = 0x09
-    G = 0x0A
-    H = 0x0B
-    I = 0x0C
-    J = 0x0D
-    K = 0x0E
-    L = 0x0F
-    M = 0x10
-    N = 0x11
-    O = 0x12
-    P = 0x13
-    Q = 0x14
-    R = 0x15
-    S = 0x16
-    T = 0x17
-    U = 0x18
-    V = 0x19
-    W = 0x1A
-    X = 0x1B
-    Y = 0x1C
-    Z = 0x1D
-    NUM_1 = 0x1E
-    NUM_2 = 0x1F
-    NUM_3 = 0x20
-    NUM_4 = 0x21
-    NUM_5 = 0x22
-    NUM_6 = 0x23
-    NUM_7 = 0x24
-    NUM_8 = 0x25
-    NUM_9 = 0x26
-    NUM_0 = 0x27
-    ENTER = 0x28
-    ESC = 0x29
-    BACKSPACE = 0x2A
-    TAB = 0x2B
-    SPACE = 0x2C
-    MINUS = 0x2D
-    EQUALS = 0x2E
-    LEFT_BRACKET = 0x2F
-    RIGHT_BRACKET = 0x30
-    BACKSLASH = 0x31
-    SEMICOLON = 0x33
-    QUOTE = 0x34
-    GRAVE = 0x35
-    COMMA = 0x36
-    PERIOD = 0x37
-    SLASH = 0x38
-    CAPS_LOCK = 0x39
-    F1 = 0x3A
-    F2 = 0x3B
-    F3 = 0x3C
-    F4 = 0x3D
-    F5 = 0x3E
-    F6 = 0x3F
-    F7 = 0x40
-    F8 = 0x41
-    F9 = 0x42
-    F10 = 0x43
-    F11 = 0x44
-    F12 = 0x45
-
-class MouseButtons:
-    LEFT = 1
-    RIGHT = 2
-    MIDDLE = 3
+    A = 0x04; B = 0x05; C = 0x06; D = 0x07; E = 0x08; F = 0x09
+    G = 0x0A; H = 0x0B; I = 0x0C; J = 0x0D; K = 0x0E; L = 0x0F
+    M = 0x10; N = 0x11; O = 0x12; P = 0x13; Q = 0x14; R = 0x15
+    S = 0x16; T = 0x17; U = 0x18; V = 0x19; W = 0x1A; X = 0x1B
+    Y = 0x1C; Z = 0x1D
+    NUM_1 = 0x1E; NUM_2 = 0x1F; NUM_3 = 0x20; NUM_4 = 0x21; NUM_5 = 0x22
+    NUM_6 = 0x23; NUM_7 = 0x24; NUM_8 = 0x25; NUM_9 = 0x26; NUM_0 = 0x27
+    ENTER = 0x28; ESC = 0x29; BACKSPACE = 0x2A; TAB = 0x2B; SPACE = 0x2C
+    MINUS = 0x2D; EQUALS = 0x2E; LEFT_BRACKET = 0x2F; RIGHT_BRACKET = 0x30
+    BACKSLASH = 0x31; SEMICOLON = 0x33; QUOTE = 0x34; GRAVE = 0x35
+    COMMA = 0x36; PERIOD = 0x37; SLASH = 0x38; CAPS_LOCK = 0x39
+    F1 = 0x3A; F2 = 0x3B; F3 = 0x3C; F4 = 0x3D; F5 = 0x3E; F6 = 0x3F
+    F7 = 0x40; F8 = 0x41; F9 = 0x42; F10 = 0x43; F11 = 0x44; F12 = 0x45

@@ -7,7 +7,10 @@ use std::sync::{Mutex, OnceLock};
 
 use anyhow::Result;
 
-use windows::Win32::Foundation::{CloseHandle, HANDLE};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, POINT};
+use windows::Win32::UI::WindowsAndMessaging::{
+    GetCursorPos, GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN,
+};
 
 mod constants;
 mod device_discovery;
@@ -32,6 +35,11 @@ struct DeviceHandleManager {
     device_handle: HANDLE,
     keyboard_id: Option<u32>,
     mouse_id: Option<u32>,
+
+    // --- 状态 ---
+    mouse_button_state: u8,
+    keyboard_modifier_state: u8,
+    keyboard_keys_state: [u8; 6],
 }
 
 impl DeviceHandleManager {
@@ -44,6 +52,9 @@ impl DeviceHandleManager {
             device_handle,
             keyboard_id: None,
             mouse_id: None,
+            mouse_button_state: 0,
+            keyboard_modifier_state: 0,
+            keyboard_keys_state: [0; 6],
         })
     }
 
@@ -72,16 +83,16 @@ impl DeviceHandleManager {
 
 impl Drop for DeviceHandleManager {
     fn drop(&mut self) {
-        let device_ids = DeviceIds {
-            keyboard_id: self.keyboard_id,
-            mouse_id: self.mouse_id,
-        };
-        if !device_ids.is_empty() {
-            // 调用 destroy_hid_devices 来执行销毁逻辑
-            if let Err(e) = hid_manager::destroy_hid_devices(&device_ids) {
-                println!("[!] 销毁设备时出错: {}", e);
-            }
-        }
+        // let device_ids = DeviceIds {
+        //     keyboard_id: self.keyboard_id,
+        //     mouse_id: self.mouse_id,
+        // };
+        // if !device_ids.is_empty() {
+        //     // 调用 destroy_hid_devices 来执行销毁逻辑
+        //     if let Err(e) = hid_manager::destroy_hid_devices(&device_ids) {
+        //         println!("[!] 销毁设备时出错: {}", e);
+        //     }
+        // }
 
         // 关闭句柄
         if !self.device_handle.is_invalid() {
@@ -96,7 +107,7 @@ unsafe impl Send for DeviceHandleManager {}
 
 /// 结果状态码
 #[repr(C)]
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum VHidResult {
     Success = 0,
     Error = 1,
@@ -126,10 +137,11 @@ pub extern "C" fn vhid_cleanup() -> VHidResult {
     VHidResult::Success
 }
 
-/// 创建或发现虚拟HID设备
-/// 返回: 状态码
+/// 激活虚拟设备。
+/// 这个函数会确保虚拟键盘和鼠标被创建或被发现，并准备好接收输入。
+/// 这是发送任何输入之前的必要步骤。
 #[no_mangle]
-pub extern "C" fn vhid_create_devices() -> VHidResult {
+pub extern "C" fn vhid_power_on() -> VHidResult {
     let mut manager = get_manager().lock().unwrap();
     match manager.ensure_devices_created() {
         Ok(_) => VHidResult::Success,
@@ -137,10 +149,11 @@ pub extern "C" fn vhid_create_devices() -> VHidResult {
     }
 }
 
-/// 销毁虚拟HID设备
-/// 返回: 状态码
+/// 停用虚拟设备。
+/// 这个函数会从系统中移除虚拟键盘和鼠标，但驱动本身保持加载状态。
+/// 调用此函数后，将无法再发送输入，直到下一次调用 vhid_power_on。
 #[no_mangle]
-pub extern "C" fn vhid_destroy_devices() -> VHidResult {
+pub extern "C" fn vhid_power_off() -> VHidResult {
     let mut manager = get_manager().lock().unwrap();
     let device_ids = DeviceIds {
         keyboard_id: manager.keyboard_id,
@@ -148,10 +161,12 @@ pub extern "C" fn vhid_destroy_devices() -> VHidResult {
     };
 
     if device_ids.is_empty() {
-        return VHidResult::Success; // 没有设备可销毁
+        // 如果设备本就不存在，也视为成功
+        return VHidResult::Success;
     }
 
     if hid_manager::destroy_hid_devices(&device_ids).is_ok() {
+        // 成功销毁后，清空内部状态
         manager.keyboard_id = None;
         manager.mouse_id = None;
         VHidResult::Success
@@ -160,59 +175,34 @@ pub extern "C" fn vhid_destroy_devices() -> VHidResult {
     }
 }
 
-/// 移动虚拟鼠标
+/// 发送一个完整的鼠标报告
 #[no_mangle]
-pub extern "C" fn vhid_move_mouse(input: *const MouseInput) -> VHidResult {
-    if input.is_null() {
+pub extern "C" fn vhid_send_mouse_report(report: *const MouseInput) -> VHidResult {
+    if report.is_null() {
         return VHidResult::InvalidParameter;
     }
     let manager = get_manager().lock().unwrap();
     if manager.device_handle.is_invalid() {
         return VHidResult::NotInitialized;
     }
-    match unsafe { hid_manager::send_mouse_input(manager.device_handle, &*input) } {
+    // 直接调用 hid_manager 的底层函数
+    match unsafe { hid_manager::send_mouse_input(manager.device_handle, &*report) } {
         Ok(_) => VHidResult::Success,
         Err(_) => VHidResult::Error,
     }
 }
 
-/// 便捷函数：按下指定的鼠标按键
+/// 发送一个完整的键盘报告
 #[no_mangle]
-pub extern "C" fn vhid_mouse_down(button: i8) -> VHidResult {
-    let input = MouseInput {
-        button,
-        x: 0,
-        y: 0,
-        wheel: 0,
-        reserved: 0,
-    };
-    vhid_move_mouse(&input)
-}
-
-/// 便捷函数：释放所有鼠标按键
-#[no_mangle]
-pub extern "C" fn vhid_mouse_up() -> VHidResult {
-    let input = MouseInput {
-        button: 0, // 按钮为 0 表示释放
-        x: 0,
-        y: 0,
-        wheel: 0,
-        reserved: 0,
-    };
-    vhid_move_mouse(&input)
-}
-
-/// 发送键盘输入
-#[no_mangle]
-pub extern "C" fn vhid_send_keyboard(input: *const KeyboardInput) -> VHidResult {
-    if input.is_null() {
+pub extern "C" fn vhid_send_keyboard_report(report: *const KeyboardInput) -> VHidResult {
+    if report.is_null() {
         return VHidResult::InvalidParameter;
     }
     let manager = get_manager().lock().unwrap();
     if manager.device_handle.is_invalid() {
         return VHidResult::NotInitialized;
     }
-    match unsafe { hid_manager::send_keyboard_input(manager.device_handle, &*input) } {
+    match unsafe { hid_manager::send_keyboard_input(manager.device_handle, &*report) } {
         Ok(_) => VHidResult::Success,
         Err(_) => VHidResult::Error,
     }
@@ -228,78 +218,272 @@ pub extern "C" fn vhid_get_last_error(buffer: *mut i8, size: usize) -> usize {
     let c_string = CString::new(error_msg).unwrap_or_default();
     let bytes = c_string.as_bytes_with_nul();
     let copy_size = std::cmp::min(size, bytes.len());
-
     unsafe {
         ptr::copy_nonoverlapping(bytes.as_ptr(), buffer as *mut u8, copy_size);
     }
     copy_size.saturating_sub(1)
 }
 
-/// 检查设备是否已创建
 #[no_mangle]
-pub extern "C" fn vhid_devices_created() -> i32 {
-    let manager = get_manager().lock().unwrap();
-    if manager.keyboard_id.is_some() || manager.mouse_id.is_some() {
-        1
-    } else {
-        0
+pub extern "C" fn vhid_mouse_move_absolute(x: i32, y: i32) -> VHidResult {
+    // 获取屏幕尺寸以进行边界检查
+    let screen_width = unsafe { GetSystemMetrics(SM_CXSCREEN) };
+    let screen_height = unsafe { GetSystemMetrics(SM_CYSCREEN) };
+
+    // 将目标坐标限制在屏幕范围内
+    let target_x = x.clamp(0, screen_width - 1);
+    let target_y = y.clamp(0, screen_height - 1);
+
+    // 获取当前鼠标位置
+    let mut current_pos = POINT { x: 0, y: 0 };
+    if unsafe { GetCursorPos(&mut current_pos) }.is_err() {
+        return VHidResult::Error;
     }
+
+    // 计算总的相对位移
+    let mut dx = target_x - current_pos.x;
+    let mut dy = target_y - current_pos.y;
+
+    // 循环发送小的相对移动报告，直到到达目标位置
+    while dx != 0 || dy != 0 {
+        // 计算本次要移动的距离（最大为 127）
+        let move_x = dx.clamp(-127, 127) as i8;
+        let move_y = dy.clamp(-127, 127) as i8;
+
+        // 发送带有当前按键状态的移动报告
+        if vhid_mouse_move(move_x, move_y) != VHidResult::Success {
+            // 如果中途某次移动失败，则中止
+            return VHidResult::Error;
+        }
+
+        // 更新剩余的位移
+        dx -= move_x as i32;
+        dy -= move_y as i32;
+
+        // 添加一个极小的延迟，让系统有时间处理移动，避免移动过快
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+
+    VHidResult::Success
 }
 
+/// 移动鼠标，同时保持当前的按键状态
 #[no_mangle]
 pub extern "C" fn vhid_mouse_move(x: i8, y: i8) -> VHidResult {
-    let input = MouseInput {
-        button: 0,
+    let manager = get_manager().lock().unwrap();
+    let report = MouseInput {
+        button: manager.mouse_button_state as i8,
         x,
         y,
         wheel: 0,
         reserved: 0,
     };
-    vhid_move_mouse(&input)
+    if hid_manager::send_mouse_input(manager.device_handle, &report).is_ok() {
+        VHidResult::Success
+    } else {
+        VHidResult::Error
+    }
 }
 
+/// 按下指定的鼠标按键
 #[no_mangle]
-pub extern "C" fn vhid_mouse_click(button: i8) -> VHidResult {
-    let input = MouseInput {
-        button,
+pub extern "C" fn vhid_mouse_down(button: i8) -> VHidResult {
+    let mut manager = get_manager().lock().unwrap();
+    manager.mouse_button_state |= button as u8; // 更新状态
+    let report = MouseInput {
+        button: manager.mouse_button_state as i8,
         x: 0,
         y: 0,
         wheel: 0,
         reserved: 0,
     };
-    vhid_move_mouse(&input)
+    if hid_manager::send_mouse_input(manager.device_handle, &report).is_ok() {
+        VHidResult::Success
+    } else {
+        VHidResult::Error
+    }
 }
 
+/// 释放指定的鼠标按键。
+#[no_mangle]
+pub extern "C" fn vhid_mouse_up(button: i8) -> VHidResult {
+    let mut manager = get_manager().lock().unwrap();
+    manager.mouse_button_state &= !(button as u8); // 更新状态
+    let report = MouseInput {
+        button: manager.mouse_button_state as i8,
+        x: 0,
+        y: 0,
+        wheel: 0,
+        reserved: 0,
+    };
+    if hid_manager::send_mouse_input(manager.device_handle, &report).is_ok() {
+        VHidResult::Success
+    } else {
+        VHidResult::Error
+    }
+}
+
+/// 点按（按下并立即释放）一个鼠标按键。
+#[no_mangle]
+pub extern "C" fn vhid_mouse_click(button: i8) -> VHidResult {
+    if vhid_mouse_down(button) != VHidResult::Success {
+        return VHidResult::Error;
+    }
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    vhid_mouse_up(button)
+}
+
+/// 滚动鼠标滚轮，同时保持当前的按键状态。
 #[no_mangle]
 pub extern "C" fn vhid_mouse_wheel(wheel: i8) -> VHidResult {
-    let input = MouseInput {
-        button: 0,
+    let manager = get_manager().lock().unwrap();
+    let report = MouseInput {
+        button: manager.mouse_button_state as i8,
         x: 0,
         y: 0,
         wheel,
         reserved: 0,
     };
-    vhid_move_mouse(&input)
+    if hid_manager::send_mouse_input(manager.device_handle, &report).is_ok() {
+        VHidResult::Success
+    } else {
+        VHidResult::Error
+    }
 }
 
+/// 按下指定的键盘按键（非修饰键）。
+/// 最多支持同时按下6个常规按键。
 #[no_mangle]
-pub extern "C" fn vhid_key_press(key: u8) -> VHidResult {
-    let mut keys = [0u8; 6];
-    keys[0] = key;
-    let input = KeyboardInput {
-        modifiers: 0,
+pub extern "C" fn vhid_key_down(key: u8) -> VHidResult {
+    let mut manager = get_manager().lock().unwrap();
+    // 找到一个空位来存放新的按键
+    if let Some(slot) = manager.keyboard_keys_state.iter_mut().find(|k| **k == 0) {
+        *slot = key;
+    } else {
+        // 如果没有空位，可以根据需要决定是忽略还是返回错误
+        // 这里我们选择忽略，以避免数组溢出
+    }
+
+    let report = KeyboardInput {
+        modifiers: manager.keyboard_modifier_state,
         reserved: 0,
-        keys,
+        keys: manager.keyboard_keys_state,
     };
-    vhid_send_keyboard(&input)
+
+    if hid_manager::send_keyboard_input(manager.device_handle, &report).is_ok() {
+        VHidResult::Success
+    } else {
+        VHidResult::Error
+    }
 }
 
+/// 释放指定的键盘按键（非修饰键）。
 #[no_mangle]
-pub extern "C" fn vhid_key_release() -> VHidResult {
-    let input = KeyboardInput {
+pub extern "C" fn vhid_key_up(key: u8) -> VHidResult {
+    let mut manager = get_manager().lock().unwrap();
+    // 从状态数组中移除指定的按键
+    if let Some(slot) = manager.keyboard_keys_state.iter_mut().find(|k| **k == key) {
+        *slot = 0;
+    }
+    // 重新整理数组，将所有非零值前移（可选，但更规范）
+    manager
+        .keyboard_keys_state
+        .sort_unstable_by(|a, b| b.cmp(a));
+
+    let report = KeyboardInput {
+        modifiers: manager.keyboard_modifier_state,
+        reserved: 0,
+        keys: manager.keyboard_keys_state,
+    };
+
+    if hid_manager::send_keyboard_input(manager.device_handle, &report).is_ok() {
+        VHidResult::Success
+    } else {
+        VHidResult::Error
+    }
+}
+
+/// 按下指定的修饰键（如 Ctrl, Shift, Alt）。
+/// 修饰键的值可以进行位或运算以实现组合，例如 `LEFT_CTRL | LEFT_SHIFT`。
+#[no_mangle]
+pub extern "C" fn vhid_modifier_down(modifier: u8) -> VHidResult {
+    let mut manager = get_manager().lock().unwrap();
+    manager.keyboard_modifier_state |= modifier; // 更新状态
+
+    let report = KeyboardInput {
+        modifiers: manager.keyboard_modifier_state,
+        reserved: 0,
+        keys: manager.keyboard_keys_state,
+    };
+
+    if hid_manager::send_keyboard_input(manager.device_handle, &report).is_ok() {
+        VHidResult::Success
+    } else {
+        VHidResult::Error
+    }
+}
+
+/// 释放指定的修饰键。
+#[no_mangle]
+pub extern "C" fn vhid_modifier_up(modifier: u8) -> VHidResult {
+    let mut manager = get_manager().lock().unwrap();
+    manager.keyboard_modifier_state &= !modifier; // 更新状态
+
+    let report = KeyboardInput {
+        modifiers: manager.keyboard_modifier_state,
+        reserved: 0,
+        keys: manager.keyboard_keys_state,
+    };
+
+    if hid_manager::send_keyboard_input(manager.device_handle, &report).is_ok() {
+        VHidResult::Success
+    } else {
+        VHidResult::Error
+    }
+}
+
+/// 点按（按下并立即释放）单个键盘按键。
+#[no_mangle]
+pub extern "C" fn vhid_key_tap(key: u8) -> VHidResult {
+    if vhid_key_down(key) != VHidResult::Success {
+        return VHidResult::Error;
+    }
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    vhid_key_up(key)
+}
+
+/// 重置所有内部状态，并向设备发送“全部释放”的报告。
+/// 这可以用于在操作序列之间或在发生错误后，确保设备处于一个干净的状态。
+#[no_mangle]
+pub extern "C" fn vhid_reset_state() -> VHidResult {
+    let mut manager = get_manager().lock().unwrap();
+
+    // 1. 重置内部状态变量
+    manager.mouse_button_state = 0;
+    manager.keyboard_modifier_state = 0;
+    manager.keyboard_keys_state = [0; 6];
+
+    // 2. 发送一个“全部释放”的鼠标报告
+    let mouse_report = MouseInput {
+        button: 0,
+        x: 0,
+        y: 0,
+        wheel: 0,
+        reserved: 0,
+    };
+    if hid_manager::send_mouse_input(manager.device_handle, &mouse_report).is_err() {
+        // 即使一个失败了，我们仍然尝试重置另一个
+    }
+
+    // 3. 发送一个“全部释放”的键盘报告
+    let keyboard_report = KeyboardInput {
         modifiers: 0,
         reserved: 0,
-        keys: [0u8; 6],
+        keys: [0; 6],
     };
-    vhid_send_keyboard(&input)
+    if hid_manager::send_keyboard_input(manager.device_handle, &keyboard_report).is_err() {
+        return VHidResult::Error; // 如果两个都失败了，就返回错误
+    }
+
+    VHidResult::Success
 }

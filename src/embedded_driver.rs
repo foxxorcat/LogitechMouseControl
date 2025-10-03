@@ -1,13 +1,13 @@
 use anyhow::{anyhow, Result};
 use include_dir::{include_dir, Dir};
-use walkdir::WalkDir;
 use std::path::PathBuf;
+use walkdir::WalkDir;
 
 use crate::constants::INF_BUS_FILE;
 
 // 1. 在编译时，将项目根目录下的 "drivers" 文件夹完整地嵌入进来。
 //    请确保您的驱动文件 (.inf, .sys) 都存放在这个 "drivers" 目录下。
-static DRIVER_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/logi");
+static DRIVER_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/logi/driver");
 
 /// 这个结构体用于管理临时驱动文件。
 /// 当它被创建时，会将内置的整个驱动目录解压到临时文件夹。
@@ -43,6 +43,7 @@ impl TmpDriverManager {
 
     /// 获取总线驱动 .inf 文件的路径，无论它在哪个子目录。
     pub fn bus_inf_path(&self) -> Result<PathBuf> {
+        
         self.find_inf_file(INF_BUS_FILE)
     }
 
