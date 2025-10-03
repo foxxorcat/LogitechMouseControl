@@ -3,7 +3,7 @@ use include_dir::{include_dir, Dir};
 use std::path::PathBuf;
 use walkdir::WalkDir;
 
-use crate::constants::INF_BUS_FILE;
+use crate::constants::{INF_BUS_FILE, INF_HID_FILE};
 
 // 1. 在编译时，将项目根目录下的 "drivers" 文件夹完整地嵌入进来。
 //    请确保您的驱动文件 (.inf, .sys) 都存放在这个 "drivers" 目录下。
@@ -49,7 +49,7 @@ impl TmpDriverManager {
 
     /// 获取 HID 驱动 .inf 文件的路径，无论它在哪个子目录。
     pub fn hid_inf_path(&self) -> Result<PathBuf> {
-        self.find_inf_file(INF_BUS_FILE)
+        self.find_inf_file(INF_HID_FILE)
     }
 }
 

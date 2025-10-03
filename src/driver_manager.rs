@@ -16,7 +16,7 @@ use windows::{
     },
 };
 
-use crate::{constants::*, utils::find_inf_file};
+use crate::{constants::*, utils::{find_inf_file, get_device_hardware_id}};
 
 pub fn install_driver_path(inf_bus_path: &str, inf_hid_path: &str) -> Result<()> {
     println!("[*] --- 开始驱动安装流程 ---");
@@ -263,56 +263,4 @@ pub(crate) fn check_device_exists() -> Result<bool> {
 
     unsafe { SetupDiDestroyDeviceInfoList(dev_info_set)? };
     Ok(found)
-}
-
-pub(crate) fn get_device_hardware_id(
-    dev_info_set: HDEVINFO,
-    dev_info_data: &mut SP_DEVINFO_DATA,
-) -> Option<String> {
-    let mut required_size = 0;
-
-    // First call to get the size
-    unsafe {
-        SetupDiGetDeviceRegistryPropertyW(
-            dev_info_set,
-            dev_info_data,
-            SPDRP_HARDWAREID,
-            None,
-            None,
-            Some(&mut required_size),
-        )
-        .ok(); // We expect this to fail with ERROR_INSUFFICIENT_BUFFER
-    }
-
-    if required_size == 0 {
-        return None;
-    }
-
-    let mut buffer = vec![0u8; required_size as usize];
-
-    if unsafe {
-        SetupDiGetDeviceRegistryPropertyW(
-            dev_info_set,
-            dev_info_data,
-            SPDRP_HARDWAREID,
-            None,
-            Some(&mut buffer),
-            Some(&mut required_size),
-        )
-    }
-    .is_ok()
-    {
-        let wide_slice: &[u16] =
-            unsafe { std::slice::from_raw_parts(buffer.as_ptr() as *const u16, buffer.len() / 2) };
-        // The buffer is a multi-string, so we just take the first one.
-        Some(
-            String::from_utf16_lossy(&wide_slice)
-                .split('\0')
-                .next()
-                .unwrap_or("")
-                .to_string(),
-        )
-    } else {
-        None
-    }
 }

@@ -11,7 +11,7 @@ pub const HARDWARE_ID: &str = "root\\LGHUBVirtualBus";
 /// 设备名称
 pub const DEVICE_NAME: &str = "System";
 /// 总线设备路径
-pub const BUS_DEVICE_PATH: &str = "\\\\?\\root#system#0001#{dfbedcdb-2148-416d-9e4d-cecc2424128c}";
+// pub const BUS_DEVICE_PATH: &str = "\\\\?\\root#system#0001#{dfbedcdb-2148-416d-9e4d-cecc2424128c}";
 
 // ================================
 // IOCTL 控制码 (基于驱动分析)

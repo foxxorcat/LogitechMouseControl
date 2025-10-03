@@ -2,6 +2,9 @@
 name = "logi_vhid_manager"
 version = "0.1.0"
 edition = "2021"
+authors = ["foxxorcat"]
+repository = "https://github.com/foxxorcat/LogitechMouseControl"
+description = "调用罗技键鼠驱动创建和控制虚拟 HID 设备"
 
 [lib]
 name = "logi_vhid"
@@ -28,7 +31,5 @@ features = [
     "Win32_System_SystemServices",
     "Win32_Storage_FileSystem",
     "Win32_UI_WindowsAndMessaging",
+    "Win32_System_Services",
 ]
-
-[build-dependencies]
-cargo-patch = "0.3"

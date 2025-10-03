@@ -2,7 +2,7 @@ use anyhow::{anyhow, Result};
 use std::mem;
 
 use windows::{
-    core::{HSTRING, PCWSTR},
+    core::{GUID, HSTRING, PCWSTR},
     Win32::{
         Foundation::{CloseHandle, GENERIC_READ, GENERIC_WRITE, HANDLE},
         Storage::FileSystem::{
@@ -12,9 +12,9 @@ use windows::{
     },
 };
 
-use crate::device_discovery::DeviceDiscovery;
 use crate::types::{DeviceIds, KeyboardInput, MouseInput};
-use crate::{constants::*, utils::get_last_error}; // get_last_error 仍然用于 IOCTL 的错误信息
+use crate::{constants::*, utils::get_last_error};
+use crate::{device_discovery::DeviceDiscovery, utils::find_device_path_by_interface_guid};
 
 /// 创建虚拟HID设备，并返回发现的设备ID
 pub fn create_hid_devices() -> Result<DeviceIds> {
@@ -59,25 +59,35 @@ pub fn destroy_hid_devices(device_ids: &DeviceIds) -> Result<()> {
 }
 
 pub(crate) fn open_bus_device() -> Result<HANDLE> {
-    let device_path_hstring = HSTRING::from(BUS_DEVICE_PATH);
+    // 这是我们驱动在内核中注册的唯一接口GUID
+    const BUS_INTERFACE_GUID: GUID = GUID::from_u128(0xdfbedcdb_2148_416d_9e4d_cecc2424128c);
 
-    let handle = unsafe {
-        CreateFileW(
-            PCWSTR::from_raw(device_path_hstring.as_ptr()),
+    println!("[*] 正在动态查找总线设备路径...");
+
+    // 1. 调用 utils 中的新函数来获取路径
+    let device_path = find_device_path_by_interface_guid(BUS_INTERFACE_GUID)?;
+    let device_path_hstring = HSTRING::from(device_path.as_str());
+
+    println!("[+] 成功找到设备路径: {}", device_path);
+
+    // 2. 使用动态获取到的路径打开设备句柄
+    unsafe {
+        let handle = CreateFileW(
+            &device_path_hstring,
             (GENERIC_READ | GENERIC_WRITE).0,
             FILE_SHARE_READ | FILE_SHARE_WRITE,
             None,
             OPEN_EXISTING,
             FILE_FLAG_OVERLAPPED,
             None,
-        )?
-    };
+        )?;
 
-    if handle.is_invalid() {
-        Err(anyhow!("打开总线设备失败: {}", get_last_error()))
-    } else {
-        println!("  - 总线设备句柄获取成功。");
-        Ok(handle)
+        if handle.is_invalid() {
+            Err(anyhow!("打开总线设备句柄失败: {}", get_last_error()))
+        } else {
+            println!("  - 总线设备句柄获取成功。");
+            Ok(handle)
+        }
     }
 }
 
@@ -273,34 +283,31 @@ pub fn send_keyboard_input(device_handle: HANDLE, input: &KeyboardInput) -> Resu
 
 /// 打开可用的虚拟设备句柄
 pub fn open_vulnerable_device() -> Result<HANDLE> {
-    // 设备路径模板，使用占位符替换序号
-    // const DEVICE_PATH_TEMPLATE: &str =;
-    // 尝试的设备序号范围
-    for number in 1..=3 {
-        // 动态生成设备路径
-        let path = format!(
-            "\\\\.\\ROOT#SYSTEM#000{}#{{1abc05c0-c378-41b9-9cef-df1aba82b015}}",
-            number
-        );
-        let path_hstring = HSTRING::from(&path);
+    const BUS_INTERFACE_GUID: GUID = GUID::from_u128(0x1abc05c0_c378_41b9_9cef_df1aba82b015);
 
-        let handle = unsafe {
-            CreateFileW(
-                PCWSTR::from_raw(path_hstring.as_ptr()),
-                GENERIC_WRITE.0,
-                FILE_SHARE_READ | FILE_SHARE_WRITE,
-                None,
-                OPEN_EXISTING,
-                Default::default(),
-                None,
-            )
-        };
+    println!("[*] 正在动态查找虚拟设备路径...");
 
-        if let Ok(h) = handle {
-            if !h.is_invalid() {
-                println!("  - 成功打开虚拟设备: {}", path);
-                return Ok(h);
-            }
+    // 1. 调用 utils 中的新函数来获取路径
+    let device_path = find_device_path_by_interface_guid(BUS_INTERFACE_GUID)?;
+    let device_path_hstring = HSTRING::from(device_path.as_str());
+
+    println!("[+] 成功找到虚拟设备: {}", device_path);
+    let handle = unsafe {
+        CreateFileW(
+            PCWSTR::from_raw(device_path_hstring.as_ptr()),
+            GENERIC_WRITE.0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            None,
+            OPEN_EXISTING,
+            Default::default(),
+            None,
+        )
+    };
+
+    if let Ok(h) = handle {
+        if !h.is_invalid() {
+            println!("  - 成功打开虚拟设备: {}", device_path_hstring);
+            return Ok(h);
         }
     }
 

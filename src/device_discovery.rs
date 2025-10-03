@@ -91,9 +91,9 @@ impl DeviceDiscovery {
 fn find_bus_devinst() -> Result<Option<DEVINST>> {
     let device_info_set: HDEVINFO = unsafe {
         SetupDiGetClassDevsW(
-            None, // class_guid is optional
-            None, // enumerator is optional
-            None, // hwnd_parent is optional
+            None,
+            None,
+            None,
             DIGCF_ALLCLASSES | DIGCF_PRESENT,
         )?
     };
@@ -108,9 +108,10 @@ fn find_bus_devinst() -> Result<Option<DEVINST>> {
         dev_info_data.cbSize = mem::size_of::<SP_DEVINFO_DATA>() as u32;
 
         if unsafe { SetupDiEnumDeviceInfo(device_info_set, index, &mut dev_info_data) }.is_err() {
-            break; // 枚举完成或出错
+            break;
         }
-
+        
+        // 直接调用 utils 中的函数
         if let Some(hwid) = get_device_hardware_id(device_info_set, &mut dev_info_data) {
             if hwid.to_uppercase().contains(&HARDWARE_ID.to_uppercase()) {
                 unsafe { SetupDiDestroyDeviceInfoList(device_info_set) }?;

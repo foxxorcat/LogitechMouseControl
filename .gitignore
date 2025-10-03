@@ -32,6 +32,7 @@ __pypackages__/
 # 编译输出
 target/
 Cargo.lock
+*.zip
 
 # 测试相关
 *.rs.bk
